@@ -31,6 +31,8 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   button.primary{width:100%;padding:12px;margin-top:16px;background:var(--ac);color:#001317;border:0;
     border-radius:10px;font-weight:600;font-size:15px;cursor:pointer}
   .row{display:flex;gap:10px}.row>div{flex:1}
+  button.ghost{padding:10px 12px;background:var(--bg);color:var(--ac);border:1px solid var(--bd);
+    border-radius:9px;cursor:pointer;font-size:13px;white-space:nowrap}
   .hide{display:none}
   .gauge{font-size:54px;font-weight:700;text-align:center;margin:6px 0}
   .state{text-align:center;color:var(--ac);font-size:16px;margin-bottom:14px}
@@ -38,6 +40,9 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   .kv:last-child{border:0}.kv span{color:var(--mut)}
   .hint{font-size:12px;color:var(--mut);margin-top:6px;line-height:1.5}
   .ok{color:#3fb950}.err{color:#f85149}
+  #logbox{margin:0;max-height:62vh;overflow:auto;white-space:pre-wrap;word-break:break-word;
+    font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.45;color:var(--mut);
+    background:var(--bg);border:1px solid var(--bd);border-radius:9px;padding:10px}
 </style>
 </head>
 <body>
@@ -46,6 +51,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <div class="tabs">
     <button id="tStatus" class="on" onclick="tab('status')">Status</button>
     <button id="tSettings" onclick="tab('settings')">Settings</button>
+    <button id="tLog" onclick="tab('log')">Log</button>
   </div>
 
   <!-- STATUS -->
@@ -67,18 +73,30 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     <form id="form">
       <div class="card">
         <b>WiFi</b>
-        <label>SSID</label><input name="wifiSsid" id="wifiSsid">
+        <label>Nearby networks</label>
+        <div class="row">
+          <div><select id="ssidSel" onchange="pickSsid()"><option value="">&mdash; scan &mdash;</option></select></div>
+          <div style="flex:0 0 auto"><button type="button" class="ghost" onclick="scan()">&#8635; Scan</button></div>
+        </div>
+        <label>SSID</label><input name="wifiSsid" id="wifiSsid" placeholder="network name">
         <label>Password</label><input name="wifiPass" id="wifiPass" type="password" placeholder="(unchanged if blank)">
+        <label>Hostname</label><input name="hostname" id="hostname" placeholder="printorb">
+        <div class="hint">Network name &amp; reachable as <b>&lt;hostname&gt;.local</b>.</div>
       </div>
       <div class="card">
         <b>Printer</b>
+        <label>Discover (mDNS)</label>
+        <div class="row">
+          <div><select id="discSel" onchange="pickDisc()"><option value="">&mdash; discover &mdash;</option></select></div>
+          <div style="flex:0 0 auto"><button type="button" class="ghost" onclick="discover()">&#8635; Find</button></div>
+        </div>
         <label>Type</label>
         <select name="printerType" id="printerType" onchange="ptype()">
           <option value="klipper">Klipper (Moonraker)</option>
           <option value="bambu">Bambu Lab</option>
         </select>
         <label>Display name</label><input name="printerName" id="printerName">
-        <label>Printer IP</label><input name="printerIp" id="printerIp" placeholder="192.168.1.50">
+        <label>Printer IP / hostname</label><input name="printerIp" id="printerIp" placeholder="192.168.1.50 or printer.local">
 
         <div id="klip">
           <div class="row">
@@ -104,19 +122,83 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       <div id="msg" class="hint"></div>
     </form>
   </div>
+
+  <!-- LOG -->
+  <div id="log" class="hide">
+    <div class="card">
+      <div class="row" style="align-items:center;margin-bottom:8px">
+        <div><b>Device log</b></div>
+        <div style="flex:0 0 auto"><button type="button" class="ghost" onclick="loadLog()">&#8635; Refresh</button></div>
+      </div>
+      <pre id="logbox"></pre>
+    </div>
+  </div>
 </div>
 
 <script>
 function tab(t){
-  document.getElementById('status').classList.toggle('hide',t!='status');
-  document.getElementById('settings').classList.toggle('hide',t!='settings');
+  ['status','settings','log'].forEach(function(x){
+    document.getElementById(x).classList.toggle('hide',x!=t);
+  });
   document.getElementById('tStatus').classList.toggle('on',t=='status');
   document.getElementById('tSettings').classList.toggle('on',t=='settings');
+  document.getElementById('tLog').classList.toggle('on',t=='log');
+  if(t=='settings'&&!window._scanned){window._scanned=1;scan();}
+  window._logOn=(t=='log');
+  if(t=='log')loadLog();
+}
+async function loadLog(){
+  try{
+    var t=await (await fetch('/api/log')).text();
+    var box=document.getElementById('logbox');
+    var atBottom=box.scrollTop+box.clientHeight>=box.scrollHeight-20;
+    box.textContent=t;
+    if(atBottom)box.scrollTop=box.scrollHeight;
+  }catch(e){}
 }
 function ptype(){
   var b=document.getElementById('printerType').value=='bambu';
   document.getElementById('bamb').classList.toggle('hide',!b);
   document.getElementById('klip').classList.toggle('hide',b);
+}
+function bars(r){return r>=-55?'█▆▄':r>=-65?'▆▄':r>=-75?'▄':'▂';}
+async function scan(){
+  var sel=document.getElementById('ssidSel');
+  sel.innerHTML='<option>scanning…</option>';
+  for(var i=0;i<20;i++){
+    var d=await (await fetch('/api/scan')).json();
+    if(d.scanning){await new Promise(r=>setTimeout(r,1000));continue;}
+    var nets=d.networks||[];
+    sel.innerHTML='<option value="">'+(nets.length?'— select —':'— none —')+'</option>';
+    nets.forEach(function(n){
+      var o=document.createElement('option');o.value=n.ssid;
+      o.textContent=n.ssid+'  '+bars(n.rssi)+(n.secure?' 🔒':'');
+      sel.appendChild(o);
+    });
+    return;
+  }
+  sel.innerHTML='<option value="">— timeout —</option>';
+}
+function pickSsid(){var v=document.getElementById('ssidSel').value;if(v)document.getElementById('wifiSsid').value=v;}
+async function discover(){
+  var sel=document.getElementById('discSel');sel.innerHTML='<option>finding…</option>';
+  try{
+    var d=await (await fetch('/api/discover')).json();
+    var ps=d.printers||[];
+    sel.innerHTML='<option value="">'+(ps.length?'— select —':'— none found —')+'</option>';
+    ps.forEach(function(p){
+      var o=document.createElement('option');o.value=JSON.stringify(p);
+      o.textContent=p.type+': '+(p.name||p.ip)+' ('+p.ip+')';
+      sel.appendChild(o);
+    });
+  }catch(e){sel.innerHTML='<option value="">— error —</option>';}
+}
+function pickDisc(){
+  var v=document.getElementById('discSel').value;if(!v)return;
+  var p=JSON.parse(v);
+  document.getElementById('printerType').value=p.type;ptype();
+  document.getElementById('printerIp').value=p.name||p.ip;
+  if(p.type=='klipper'&&p.port)document.getElementById('moonrakerPort').value=p.port;
 }
 function eta(s){ if(s<0)return'—';var h=(s/3600)|0,m=((s%3600)/60)|0;return h?h+'h '+m+'m':m+'m';}
 async function loadStatus(){
@@ -155,6 +237,7 @@ document.getElementById('form').addEventListener('submit',async function(e){
   }catch(e){m.textContent='Error: '+e;m.className='hint err';}
 });
 loadConfig();loadStatus();setInterval(loadStatus,2000);
+setInterval(function(){if(window._logOn)loadLog();},1500);
 </script>
 </body>
 </html>

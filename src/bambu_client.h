@@ -23,6 +23,9 @@ public:
 
     void begin() override;
     void loop() override;
+    void pause()  override;
+    void resume() override;
+    void stop()   override;
 
     /** Static trampoline target. */
     void onMessage(char* topic, uint8_t* payload, unsigned int len);
@@ -30,6 +33,7 @@ public:
 private:
     bool reconnect();
     void requestPushAll();
+    void sendCommand(const char* cmd);
 
     String              _host;
     String              _serial;

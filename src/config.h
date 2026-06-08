@@ -16,6 +16,9 @@ struct OrbConfig {
     String wifiSsid;
     String wifiPass;
 
+    // --- Network identity (DHCP hostname + mDNS name + AP SSID base) ---
+    String hostname = "printorb";
+
     // --- Printer selection ---
     PrinterType printerType = PrinterType::KLIPPER;
     String      printerName;          // friendly label shown on screen

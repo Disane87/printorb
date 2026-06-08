@@ -1,10 +1,13 @@
 #include "bambu_client.h"
+#include "logbuf.h"
 #include <WiFi.h>
 #include <ArduinoJson.h>
 
 // PubSubClient needs a generous buffer: the initial "pushall" report from a
-// Bambu printer can be several KB. Incremental reports afterwards are small.
-static const uint16_t MQTT_BUFFER = 16384;
+// Bambu printer (especially with AMS) is large — ~32 KB observed on an X1/AMS
+// setup. PubSubClient silently DROPS any packet larger than this buffer (no
+// callback fires), so it must be big enough or the full report never arrives.
+static const uint16_t MQTT_BUFFER = 49152;
 
 // Single active instance pointer so the C-style MQTT callback can reach us.
 static BambuClient* g_bambu = nullptr;
@@ -19,10 +22,13 @@ void BambuClient::begin() {
 
     _net.setInsecure();                 // Bambu uses a self-signed cert on LAN
     _mqtt.setServer(_host.c_str(), 8883);
-    _mqtt.setBufferSize(MQTT_BUFFER);
+    bool bufOk = _mqtt.setBufferSize(MQTT_BUFFER);
     _mqtt.setKeepAlive(30);
     _mqtt.setSocketTimeout(5);
     _mqtt.setCallback(bambu_mqtt_cb);
+    Log::printf("[Bambu] begin host=%s serial=%s codeLen=%d buf(%u)=%d\n",
+                  _host.c_str(), _serial.c_str(), (int)_code.length(),
+                  MQTT_BUFFER, bufOk);
 }
 
 void BambuClient::loop() {
@@ -52,14 +58,20 @@ void BambuClient::loop() {
 
 bool BambuClient::reconnect() {
     String clientId = "printorb-" + _serial.substring(0, 8);
+    Log::printf("[Bambu] connecting %s:8883 ...\n", _host.c_str());
     // Bambu LAN MQTT: username "bblp", password = access code.
     if (!_mqtt.connect(clientId.c_str(), "bblp", _code.c_str())) {
+        // PubSubClient state(): -4 timeout, -2 TLS/TCP connect failed,
+        // 4 bad user/pass, 5 not authorized (wrong access code).
+        Log::printf("[Bambu] connect FAILED, mqtt state=%d\n", _mqtt.state());
         _status.state = PrintState::OFFLINE;
         return false;
     }
+    Log::printf("[Bambu] MQTT connected\n");
 
     String reportTopic = "device/" + _serial + "/report";
-    _mqtt.subscribe(reportTopic.c_str());
+    bool sub = _mqtt.subscribe(reportTopic.c_str());
+    Log::printf("[Bambu] subscribe %s -> %d\n", reportTopic.c_str(), sub);
     requestPushAll();
     _lastPushAllMs = millis();
     return true;
@@ -71,6 +83,19 @@ void BambuClient::requestPushAll() {
     const char* msg = "{\"pushing\":{\"sequence_id\":\"0\",\"command\":\"pushall\"}}";
     _mqtt.publish(reqTopic.c_str(), msg);
 }
+
+void BambuClient::sendCommand(const char* cmd) {
+    if (!_mqtt.connected()) { Log::printf("[Bambu] cmd %s ignored (offline)\n", cmd); return; }
+    String topic = "device/" + _serial + "/request";
+    String msg = String("{\"print\":{\"command\":\"") + cmd +
+                 "\",\"param\":\"\",\"sequence_id\":\"1\"}}";
+    bool ok = _mqtt.publish(topic.c_str(), msg.c_str());
+    Log::printf("[Bambu] cmd %s -> %d\n", cmd, ok);
+}
+
+void BambuClient::pause()  { sendCommand("pause"); }
+void BambuClient::resume() { sendCommand("resume"); }
+void BambuClient::stop()   { sendCommand("stop"); }
 
 void BambuClient::onMessage(char* /*topic*/, uint8_t* payload, unsigned int len) {
     // We only care about messages containing a "print" object.
@@ -88,11 +113,12 @@ void BambuClient::onMessage(char* /*topic*/, uint8_t* payload, unsigned int len)
     p["subtask_name"]         = true;
     p["gcode_file"]           = true;
     p["print_error"]          = true;
+    p["ams"]                  = true;   // whole AMS subtree (units + trays)
 
     JsonDocument doc;
     DeserializationError err =
         deserializeJson(doc, payload, len, DeserializationOption::Filter(filter));
-    if (err) return;
+    if (err) { Log::printf("[Bambu] json err: %s\n", err.c_str()); return; }
 
     JsonObject pr = doc["print"];
     if (pr.isNull()) return;  // status message of a type we don't track
@@ -143,5 +169,53 @@ void BambuClient::onMessage(char* /*topic*/, uint8_t* payload, unsigned int len)
         _status.errorMsg = "err " + String(perr);
     }
 
+    // --- AMS (filament system), all units ---
+    JsonObject ams = pr["ams"];
+    if (!ams.isNull()) {
+        JsonArray units = ams["ams"];
+        if (!units.isNull()) {
+            uint8_t un = 0;
+            for (JsonObject u : units) {
+                if (un >= 4) break;
+                AmsUnit& U = _status.ams.unit[un];
+                U.present  = true;
+                U.humidity = atoi((const char*)(u["humidity"] | "-1"));
+                uint8_t n = 0;
+                for (JsonObject t : u["tray"].as<JsonArray>()) {
+                    if (n >= 4) break;
+                    AmsSlot& sl = U.slot[n];
+                    sl.type    = String((const char*)(t["tray_type"] | ""));
+                    sl.present = sl.type.length() > 0;
+                    const char* col = t["tray_color"] | "";
+                    if (strlen(col) >= 6)
+                        sl.color = (uint32_t)strtoul(String(col).substring(0, 6).c_str(), nullptr, 16);
+                    sl.remain = (int8_t)(t["remain"] | -1);
+                    n++;
+                }
+                U.count = n;
+                un++;
+            }
+            _status.ams.units   = un;
+            _status.ams.present = un > 0;
+        }
+        int idx = atoi((const char*)(ams["tray_now"] | "255"));
+        if (idx >= 0 && idx < 16) {
+            _status.ams.activeUnit = (int8_t)(idx / 4);
+            _status.ams.activeSlot = (int8_t)(idx % 4);
+        } else {
+            _status.ams.activeUnit = -1;
+            _status.ams.activeSlot = -1;
+        }
+    }
+
     _status.lastUpdateMs = millis();
+
+    // Log only on state transitions to keep the serial output quiet.
+    static PrintState lastLogged = (PrintState)0xFF;
+    if (_status.state != lastLogged) {
+        lastLogged = _status.state;
+        Log::printf("[Bambu] status: %s %d%%\n",
+                      PrinterStatus::stateLabel(_status.state),
+                      (int)(_status.progress + 0.5f));
+    }
 }

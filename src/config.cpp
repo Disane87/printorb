@@ -20,6 +20,7 @@ void load() {
     prefs.begin(NS, true);  // read-only
     cfg.wifiSsid        = prefs.getString("wifiSsid", "");
     cfg.wifiPass        = prefs.getString("wifiPass", "");
+    cfg.hostname        = prefs.getString("host", "printorb");
     cfg.printerType     = static_cast<PrinterType>(prefs.getUChar("ptype", 0));
     cfg.printerName     = prefs.getString("pname", "My Printer");
     cfg.printerIp       = prefs.getString("pip", "");
@@ -35,6 +36,7 @@ void save() {
     prefs.begin(NS, false);  // read-write
     prefs.putString("wifiSsid", cfg.wifiSsid);
     prefs.putString("wifiPass", cfg.wifiPass);
+    prefs.putString("host", cfg.hostname);
     prefs.putUChar("ptype", static_cast<uint8_t>(cfg.printerType));
     prefs.putString("pname", cfg.printerName);
     prefs.putString("pip", cfg.printerIp);

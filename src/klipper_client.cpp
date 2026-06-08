@@ -1,4 +1,5 @@
 #include "klipper_client.h"
+#include "logbuf.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -18,6 +19,24 @@ void KlipperClient::loop() {
     _lastPollMs = now;
     poll();
 }
+
+bool KlipperClient::postCommand(const char* path) {
+    if (WiFi.status() != WL_CONNECTED) return false;
+    HTTPClient http;
+    String url = "http://" + _host + ":" + String(_port) + path;
+    http.setConnectTimeout(1500);
+    http.setTimeout(2500);
+    if (!http.begin(url)) return false;
+    if (_apiKey.length()) http.addHeader("X-Api-Key", _apiKey);
+    int code = http.POST("");
+    http.end();
+    Log::printf("[Klipper] POST %s -> %d\n", path, code);
+    return code == HTTP_CODE_OK;
+}
+
+void KlipperClient::pause()  { postCommand("/printer/print/pause"); }
+void KlipperClient::resume() { postCommand("/printer/print/resume"); }
+void KlipperClient::stop()   { postCommand("/printer/print/cancel"); }
 
 void KlipperClient::poll() {
     HTTPClient http;

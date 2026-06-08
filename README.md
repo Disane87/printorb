@@ -2,8 +2,9 @@
 
 3D-printer status display on a **Waveshare ESP32-S3-Touch-LCD-1.28** (round
 240×240 LCD). Connects to either **Klipper (Moonraker)** or **Bambu Lab** and
-shows progress, temperatures, remaining time and layers. Printer selection and
-credentials are configured through a built-in **web server**.
+shows progress, temperatures, remaining time, layers and — for Bambu — the
+**AMS** filament state. Everything is configured through a built-in **web
+portal**; the round screen is a **swipeable, touch-driven carousel**.
 
 ```
    ╭───────────────╮
@@ -11,9 +12,10 @@ credentials are configured through a built-in **web server**.
    │   model.gcode │
    │      63%      │     ← large progress ring (LVGL)
    │   Printing    │
-   │  N 220°  B 60°│
+   │  🌡220°  ▦60° │
    │  ⟳ 24m  84/132│
    ╰───────────────╯
+     ●  ○  ○  ○  ○      ← swipe left/right between screens
 ```
 
 ---
@@ -21,13 +23,24 @@ credentials are configured through a built-in **web server**.
 ## Features
 
 - **Two backends, switchable at runtime:**
-  - **Klipper** – HTTP polling of the Moonraker API (`/printer/objects/query`)
+  - **Klipper** – HTTP polling of the Moonraker API
   - **Bambu Lab** – local MQTT over TLS (port 8883, LAN mode)
-- **Web portal** (embedded in flash) to configure WiFi + printer
-- **WiFi first-time setup** via access-point fallback (`PrintOrb-Setup-xxxx`)
-- **Round LVGL UI**: progress ring, temperatures, remaining time, layers, file name
+- **Touch carousel** – swipe left/right between screens:
+  1. **Status** – progress ring, temps, time, layers (with MDI icons)
+  2. **Details** – state, file, ETA (minimal & airy)
+  3. **System** – WiFi/RSSI, IP, brightness (−/+ by touch)
+  4. **Filament (Bambu/AMS)** – colored slot tiles, active slot, humidity;
+     **swipe up/down to switch AMS units** (vertical dot indicator)
+  5. **Control** – Pause / Resume / **hold-to-Stop**
+- **Bambu AMS** – per-slot filament type, color and remaining %, active tray
+  highlight, humidity, multiple AMS units
+- **Web portal** (embedded in flash): live status, settings, and a **live device
+  log** for browser debugging
+- **First-time setup** via a **captive-portal** AP (`printorb-setup-xxxx`) with a
+  **WiFi network scan** and printer **mDNS discovery**
+- **mDNS** – reachable as `printorb.local`; printer address accepts an IP **or**
+  a hostname (`.local`). Hostname is configurable.
 - **Persistence** in NVS – survives reboot and re-flash
-- Live status also in the browser at `http://<ip>/`
 
 ---
 
@@ -48,16 +61,15 @@ credentials are configured through a built-in **web server**.
 | LCD DC          | 8    |
 | LCD CS          | 9    |
 | LCD RST         | 14   |
-| LCD Backlight   | 40   |
+| LCD Backlight   | **2**|
 | Touch SDA       | 6    |
 | Touch SCL       | 7    |
 | Touch INT       | 5    |
 | Touch RST       | 13   |
 
-> ⚠️ **Check the pins!** These values match the common board revision. If the
-> display stays dark or the touch doesn't respond, verify the pins (especially
-> **Backlight = 40**) against the Waveshare wiki for your board revision.
-> Everything lives in one place: `include/lgfx_device.h`.
+> ⚠️ **Backlight is GPIO 2** on this board revision. Some other Waveshare
+> revisions use GPIO 40 — if the screen stays dark, that's the first thing to
+> check (`ORB_PIN_LCD_BL` in `include/lgfx_device.h`).
 
 ---
 
@@ -74,7 +86,12 @@ pio device monitor      # serial output (115200 baud)
 
 The web UI is embedded in flash – **no separate LittleFS upload needed**.
 
-> **Flash size:** The partition table only uses the first 4 MB and works on both
+> **Serial:** the USB-C port is wired through the on-board **CH343 UART bridge**,
+> so `Serial` is routed to UART0 (`ARDUINO_USB_CDC_ON_BOOT=0` in
+> `platformio.ini`). The serial monitor and the web log both show the same
+> output.
+
+> **Flash size:** the partition table only uses the first 4 MB and works on both
 > 4 MB and 16 MB units. On a flash-size mismatch during upload, adjust
 > `board_upload.flash_size` in `platformio.ini` to match your unit.
 
@@ -83,24 +100,27 @@ The web UI is embedded in flash – **no separate LittleFS upload needed**.
 ## First-time setup
 
 1. **Flash** the firmware and power the board.
-2. On first boot (no WiFi credentials) PrintOrb opens an **access point**:
-   `PrintOrb-Setup-xxxx` (open). The display shows the SSID + IP.
-3. Connect to the AP and open **`http://192.168.4.1`** in a browser.
-4. In the **Settings** tab:
-   - Enter WiFi SSID + password
+2. On first boot (no WiFi credentials) PrintOrb opens a **captive-portal access
+   point**: `printorb-setup-xxxx` (open). Connecting with a phone should pop up
+   the "sign in to network" page automatically; otherwise open
+   **`http://192.168.4.1`**.
+3. In the **Settings** tab:
+   - **Scan** for your WiFi and pick the network, enter the password
+   - Optionally set a **hostname** (default `printorb` → `printorb.local`)
    - Choose the printer type:
-     - **Klipper:** printer IP, Moonraker port (default `7125`), API key optional
-     - **Bambu Lab:** printer IP, **serial number**, **LAN access code**
-   - Save → the device reboots and connects to your WiFi.
-5. Afterwards the UI is reachable at `http://<device-ip>/` (the IP is shown in the
-   serial log and briefly on the display).
+     - **Klipper:** IP/hostname, Moonraker port (default `7125`), API key optional
+     - **Bambu Lab:** IP/hostname, **serial number**, **LAN access code**
+   - Or use **Discover (mDNS)** to find a Klipper/Bambu printer on the LAN
+   - Save → the device reboots and connects.
+4. Afterwards the UI is reachable at `http://<device-ip>/` or
+   `http://printorb.local/`.
 
 ### Bambu Lab – prerequisites
 
-- Enable **LAN mode** on the printer: *Settings → WLAN → LAN mode*.
-- The **serial number** and **access code** are shown there – enter both in the portal.
-- Works with P1P/P1S/X1C/A1 on the local network. The printer must be reachable on
-  the same network.
+- Enable **LAN mode** on the printer; the **serial number** and **access code**
+  are shown there.
+- Works with P1/X1/A1/H2 over the local network for status + AMS. (Live camera is
+  **not** supported on-device — see Known limitations.)
 
 ---
 
@@ -114,16 +134,18 @@ printorb/
 │  ├─ lv_conf.h            LVGL configuration
 │  └─ lgfx_device.h        LovyanGFX panel/touch definition (PINS HERE)
 └─ src/
-   ├─ main.cpp             Setup/loop, wires everything together
+   ├─ main.cpp             Setup/loop, boot sequence, wiring
    ├─ config.{h,cpp}       Settings + NVS persistence
    ├─ display.{h,cpp}      LVGL bring-up (flush + touch)
-   ├─ ui.{h,cpp}           LVGL screens (status/setup/boot)
-   ├─ printer.h            Shared status model + interface
-   ├─ klipper_client.{h,cpp}  Moonraker HTTP client
-   ├─ bambu_client.{h,cpp}    Bambu MQTT/TLS client
-   ├─ wifi_manager.{h,cpp}    STA + AP fallback
-   ├─ web_portal.{h,cpp}      Async web server (API)
-   └─ web_index.h          Embedded config UI (HTML/CSS/JS)
+   ├─ ui.{h,cpp}           LVGL screens: boot, setup, and the touch carousel
+   ├─ orb_icons.{h,c}      Embedded Material Design icon font (nozzle/bed/…)
+   ├─ printer.h            Shared status model (+ AMS) + client interface
+   ├─ klipper_client.{h,cpp}  Moonraker HTTP client (+ pause/resume/stop)
+   ├─ bambu_client.{h,cpp}    Bambu MQTT/TLS client (+ AMS, controls)
+   ├─ wifi_manager.{h,cpp}    STA + captive AP, DNS, mDNS, host resolution
+   ├─ web_portal.{h,cpp}      Async web server (API + scan/discover/log)
+   ├─ web_index.h          Embedded config UI (HTML/CSS/JS)
+   └─ logbuf.{h,cpp}       In-memory log ring buffer (served at /api/log)
 ```
 
 ---
@@ -137,20 +159,30 @@ printorb/
 | GET    | `/api/config`  | Current settings (without WiFi password)     |
 | POST   | `/api/config`  | Save settings → reboot                       |
 | POST   | `/api/restart` | Restart the device                           |
+| GET    | `/api/scan`    | Async WiFi network scan (JSON)               |
+| GET    | `/api/discover`| mDNS discovery of Klipper/Bambu printers     |
+| GET    | `/api/log`     | Live device log (plain text)                 |
 
 ---
 
 ## Known limitations / notes
 
-- **Bambu MQTT buffer:** the initial `pushall` report can be several KB; the buffer
-  in `bambu_client.cpp` is set to 16 KB. Increase it for very large reports if
-  needed (PSRAM is available).
+- **Camera:** not available on-device. The Bambu **H2 series streams H.264 over
+  RTSPS (port 322)**, which the ESP32-S3 cannot decode. The simple JPEG chamber
+  protocol (port 6000) only exists on X1/P1/A1. A live view would require an
+  external transcoding proxy (e.g. go2rtc/ffmpeg → JPEG snapshots).
+- **Bambu MQTT buffer:** the initial `pushall` report (with AMS) is large —
+  ~32 KB observed — so the PubSubClient buffer is set to **48 KB** in
+  `bambu_client.cpp`. Too small a buffer makes PubSubClient silently drop the
+  report and the status stays "Offline".
 - **TLS unvalidated:** the Bambu LAN broker uses a self-signed certificate; the
   client connects with `setInsecure()` (common on the local network).
-- **Klipper layers:** `current/total layer` only appear if your slicer writes them
-  to `print_stats.info` (e.g. via `SET_PRINT_STATS_INFO`).
-- **AP mode** is an open network for easy first-time setup – it is no longer active
-  after the initial WiFi setup.
+- **Klipper layers:** `current/total layer` only appear if your slicer writes
+  them to `print_stats.info` (e.g. via `SET_PRINT_STATS_INFO`).
+- **mDNS discovery** only works in STA mode (on your LAN). In first-time AP setup
+  enter the IP/hostname manually; resolution then works after reboot.
+- **AP mode** is an open network for easy setup and is not active after the
+  initial WiFi setup.
 
 ---
 

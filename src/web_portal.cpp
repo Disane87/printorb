@@ -1,8 +1,12 @@
 #include "web_portal.h"
 #include "web_index.h"
 #include "config.h"
+#include "wifi_manager.h"
+#include "logbuf.h"
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
+#include <WiFi.h>
+#include <ESPmDNS.h>
 
 namespace {
     AsyncWebServer server(80);
@@ -16,6 +20,7 @@ namespace {
         JsonDocument d;
         d["wifiSsid"]        = cfg.wifiSsid;
         // wifiPass intentionally omitted (write-only).
+        d["hostname"]        = cfg.hostname;
         d["printerType"]     = Config::printerTypeStr(cfg.printerType);
         d["printerName"]     = cfg.printerName;
         d["printerIp"]       = cfg.printerIp;
@@ -59,6 +64,7 @@ namespace {
         }
 
         if (doc["wifiSsid"].is<const char*>()) cfg.wifiSsid = String((const char*)doc["wifiSsid"]);
+        if (doc["hostname"].is<const char*>())  cfg.hostname = String((const char*)doc["hostname"]);
         // Only overwrite the password when a non-empty value is supplied.
         if (doc["wifiPass"].is<const char*>()) {
             String p = String((const char*)doc["wifiPass"]);
@@ -104,6 +110,72 @@ void begin(ConfigSavedCb onSaved) {
         req->send(200, "application/json", buildStatusJson());
     });
 
+    // Live serial/debug log as plain text (the device's own scrollback buffer).
+    server.on("/api/log", HTTP_GET, [](AsyncWebServerRequest* req) {
+        req->send(200, "text/plain", Log::dump());
+    });
+
+    // Asynchronous WiFi scan. Returns {"scanning":true} while a scan runs, then
+    // {"networks":[{ssid,rssi,secure}]} once results are ready. Client polls.
+    server.on("/api/scan", HTTP_GET, [](AsyncWebServerRequest* req) {
+        int n = WiFi.scanComplete();
+        if (n == WIFI_SCAN_RUNNING) {
+            req->send(200, "application/json", "{\"scanning\":true}");
+            return;
+        }
+        if (n < 0) {                  // not started yet / previous failed
+            WiFi.scanNetworks(true);  // kick off async scan
+            req->send(200, "application/json", "{\"scanning\":true}");
+            return;
+        }
+        JsonDocument d;
+        d["scanning"] = false;
+        JsonArray arr = d["networks"].to<JsonArray>();
+        for (int i = 0; i < n; i++) {
+            String ssid = WiFi.SSID(i);
+            if (!ssid.length()) continue;
+            bool dup = false;
+            for (JsonObject o : arr) {
+                if (o["ssid"].as<String>() == ssid) {        // keep strongest dup
+                    if (WiFi.RSSI(i) > o["rssi"].as<int>()) o["rssi"] = WiFi.RSSI(i);
+                    dup = true; break;
+                }
+            }
+            if (dup) continue;
+            JsonObject o = arr.add<JsonObject>();
+            o["ssid"]   = ssid;
+            o["rssi"]   = WiFi.RSSI(i);
+            o["secure"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+        }
+        String out; serializeJson(d, out);
+        WiFi.scanDelete();
+        req->send(200, "application/json", out);
+    });
+
+    // mDNS discovery of Klipper/Bambu printers (only meaningful in STA mode,
+    // where the device is on the user's LAN). Blocks briefly per query.
+    server.on("/api/discover", HTTP_GET, [](AsyncWebServerRequest* req) {
+        JsonDocument d;
+        JsonArray arr = d["printers"].to<JsonArray>();
+        if (WifiManager::mode() == WifiManager::Mode::STA) {
+            struct { const char* svc; const char* type; } svcs[] = {
+                {"moonraker", "klipper"}, {"bambulab", "bambu"}
+            };
+            for (auto& s : svcs) {
+                int n = MDNS.queryService(s.svc, "tcp");
+                for (int i = 0; i < n; i++) {
+                    JsonObject o = arr.add<JsonObject>();
+                    o["type"] = s.type;
+                    o["name"] = MDNS.hostname(i);
+                    o["ip"]   = MDNS.IP(i).toString();
+                    o["port"] = MDNS.port(i);
+                }
+            }
+        }
+        String out; serializeJson(d, out);
+        req->send(200, "application/json", out);
+    });
+
     server.on("/api/config", HTTP_POST,
         [](AsyncWebServerRequest* req) {},   // response sent from body handler
         nullptr,
@@ -114,9 +186,16 @@ void begin(ConfigSavedCb onSaved) {
         req->onDisconnect([]() { delay(300); ESP.restart(); });
     });
 
-    // Captive-portal convenience: unknown routes -> the config page.
+    // Captive portal: in AP mode, redirect every unknown request (including the
+    // OS connectivity probes like /generate_204 and /hotspot-detect.html) to the
+    // config page so the "sign in to network" sheet pops up. In STA mode just
+    // serve the page for unknown routes.
     server.onNotFound([](AsyncWebServerRequest* req) {
-        req->send(200, "text/html", INDEX_HTML);
+        if (WifiManager::mode() == WifiManager::Mode::AP) {
+            req->redirect("http://" + WifiManager::ip() + "/");
+        } else {
+            req->send(200, "text/html", INDEX_HTML);
+        }
     });
 
     server.begin();

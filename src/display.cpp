@@ -1,5 +1,6 @@
 #include "display.h"
 #include "lgfx_device.h"
+#include "logbuf.h"
 #include <lvgl.h>
 
 static LGFX lcd;
@@ -31,6 +32,12 @@ static void touch_read(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
         data->state   = LV_INDEV_STATE_PRESSED;
         data->point.x = x;
         data->point.y = y;
+        // Throttled debug: confirms the CST816S reports coordinates.
+        static uint32_t lastLog = 0;
+        if (millis() - lastLog > 200) {
+            lastLog = millis();
+            Log::printf("[Touch] x=%ld y=%ld\n", (long)x, (long)y);
+        }
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
@@ -39,7 +46,9 @@ static void touch_read(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
 namespace Display {
 
 void begin() {
-    lcd.init();
+    Log::printf("[Display] init (BL=GPIO%d)...\n", ORB_PIN_LCD_BL);
+    bool ok = lcd.init();
+    Log::printf("[Display] panel init %s\n", ok ? "ok" : "FAILED");
     lcd.setRotation(0);
     lcd.setBrightness(255);
     lcd.fillScreen(TFT_BLACK);

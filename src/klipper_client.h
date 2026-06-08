@@ -13,9 +13,13 @@ public:
 
     void begin() override;
     void loop() override;
+    void pause()  override;
+    void resume() override;
+    void stop()   override;
 
 private:
     void poll();
+    bool postCommand(const char* path);
 
     String   _host;
     uint16_t _port;

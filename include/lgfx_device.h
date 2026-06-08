@@ -22,7 +22,7 @@
 #define ORB_PIN_LCD_DC    8
 #define ORB_PIN_LCD_CS    9
 #define ORB_PIN_LCD_RST  14
-#define ORB_PIN_LCD_BL   40  // backlight (verify; some revisions differ)
+#define ORB_PIN_LCD_BL    2  // backlight (GPIO2 on ESP32-S3-Touch-LCD-1.28; some revisions use 40)
 
 // ---- Touch (CST816S, I2C) --------------------------------------------------
 #define ORB_PIN_TP_SDA    6
