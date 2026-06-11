@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(ls -la .github)",
+      "Bash(ls .github/workflows)",
+      "Bash(ls *.csv)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Read(//f//**)",
+      "Bash(pio run *)"
     ]
   }
 }
