@@ -24,6 +24,7 @@
 #include "bambu_client.h"
 #include "timekeeper.h"
 #include "ota.h"
+#include "updater.h"
 
 static PrinterClient* printer = nullptr;
 static esp_timer_handle_t lvTickTimer = nullptr;
@@ -169,6 +170,7 @@ void setup() {
     if (WifiManager::mode() == WifiManager::Mode::STA) {
         Time::begin(cfg.timezone);
         Ota::begin();   // enable `pio ... espota` flashing over WiFi
+        Updater::begin();   // boot + daily GitHub release check (gated by config)
     }
 
     // Web portal runs in both AP and STA mode.
@@ -193,6 +195,7 @@ void setup() {
 void loop() {
     WifiManager::loop();
     Ota::loop();
+    Updater::loop();   // performs a queued GitHub OTA pull, then daily checks
 
     // A browser firmware upload runs in the async server task; it only writes a
     // progress percentage. Render the on-screen update screen here, in the LVGL
