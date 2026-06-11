@@ -24,6 +24,8 @@
 #include "bambu_client.h"
 #include "timekeeper.h"
 #include "ota.h"
+#include "updater.h"
+#include "drying.h"
 
 static PrinterClient* printer = nullptr;
 static esp_timer_handle_t lvTickTimer = nullptr;
@@ -36,12 +38,34 @@ static bool screenAsleep = false;
 // LVGL needs a millisecond tick fed independently of loop() timing.
 static void lvTick(void*) { lv_tick_inc(1); }
 
+// Start/stop AMS HT drying for the first HT unit, picking a safe temperature
+// from the loaded filament. Shared by the touch UI and the web endpoint.
+static void doDry(bool start) {
+    if (!printer) return;
+    const AmsInfo& a = printer->status().ams;
+    for (uint8_t i = 0; i < a.units; i++) {
+        const AmsUnit& U = a.unit[i];
+        if (!U.isHT) continue;
+        if (!start) { printer->stopDrying(U.rawId); return; }
+        if (U.count == 0 || !U.slot[0].present) {     // nothing to dry
+            Log::printf("[Dry] HT empty — start ignored\n");
+            return;
+        }
+        Drying::Profile p = Drying::profileForType(U.slot[0].type);
+        printer->startDrying(U.rawId, p.tempC, p.hours);
+        return;
+    }
+    Log::printf("[Dry] no AMS HT present\n");
+}
+
 // Routes on-screen control buttons to the active printer client.
 static void onControl(UI::Ctrl c) {
     if (!printer) return;
-    if      (c == UI::CTRL_PAUSE)  printer->pause();
-    else if (c == UI::CTRL_RESUME) printer->resume();
-    else                           printer->stop();
+    if      (c == UI::CTRL_PAUSE)      printer->pause();
+    else if (c == UI::CTRL_RESUME)     printer->resume();
+    else if (c == UI::CTRL_STOP)       printer->stop();
+    else if (c == UI::CTRL_DRY_START)  doDry(true);
+    else if (c == UI::CTRL_DRY_STOP)   doDry(false);
 }
 
 static String printerLabel() {
@@ -169,12 +193,14 @@ void setup() {
     if (WifiManager::mode() == WifiManager::Mode::STA) {
         Time::begin(cfg.timezone);
         Ota::begin();   // enable `pio ... espota` flashing over WiFi
+        Updater::begin();   // boot + daily GitHub release check (gated by config)
     }
 
     // Web portal runs in both AP and STA mode.
     UI::showBoot("Web portal", 85);
     lv_timer_handler();
     WebPortal::begin(nullptr);
+    WebPortal::setDryHandler(doDry);
 
     if (WifiManager::mode() == WifiManager::Mode::AP) {
         UI::showSetup(WifiManager::apSsid(), WifiManager::ip());
@@ -193,6 +219,7 @@ void setup() {
 void loop() {
     WifiManager::loop();
     Ota::loop();
+    Updater::loop();   // performs a queued GitHub OTA pull, then daily checks
 
     // A browser firmware upload runs in the async server task; it only writes a
     // progress percentage. Render the on-screen update screen here, in the LVGL

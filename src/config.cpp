@@ -32,6 +32,7 @@ void load() {
     cfg.brightness      = prefs.getUChar("bright", 100);
     cfg.screenTimeoutSec = prefs.getUShort("sleep", 120);
     cfg.screenSleepEnabled = prefs.getBool("slpOn", true);
+    cfg.autoUpdateCheck = prefs.getBool("autoupd", true);
     cfg.timezone        = prefs.getString("tz", "");
     cfg.dimSchedEnabled = prefs.getBool("dimOn", false);
     cfg.dimStartMin     = prefs.getUShort("dimStart", 22 * 60);
@@ -56,6 +57,7 @@ void save() {
     prefs.putUChar("bright", cfg.brightness);
     prefs.putUShort("sleep", cfg.screenTimeoutSec);
     prefs.putBool("slpOn", cfg.screenSleepEnabled);
+    prefs.putBool("autoupd", cfg.autoUpdateCheck);
     prefs.putString("tz", cfg.timezone);
     prefs.putBool("dimOn", cfg.dimSchedEnabled);
     prefs.putUShort("dimStart", cfg.dimStartMin);

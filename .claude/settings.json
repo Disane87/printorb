@@ -8,7 +8,8 @@
       "Read(//f//bambulab-ams-spoolman/**)",
       "Bash(pio run)",
       "Bash(pio run -t upload)",
-      "Bash(pio run -e esp32-s3-touch-lcd-128)"
+      "Bash(pio run -e esp32-s3-touch-lcd-128)",
+      "PowerShell(pio run -e esp32-s3-touch-lcd-128 -t upload)"
     ]
   }
 }

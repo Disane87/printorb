@@ -43,6 +43,10 @@ struct OrbConfig {
                                       // while no print is active; 0 = never sleep
     bool     screenSleepEnabled = true; // explicit on/off for the inactivity auto-off
 
+    // --- Updates ---
+    bool     autoUpdateCheck = true;  // periodic GitHub release check + on-screen
+                                      // / web notice. Flashing is always manual.
+
     // --- Time / scheduled dimming (needs NTP; only active in STA mode) ---
     String   timezone;                // POSIX TZ string ("" = UTC). DST handled by libc.
     bool     dimSchedEnabled = false; // reduce brightness during a nightly window

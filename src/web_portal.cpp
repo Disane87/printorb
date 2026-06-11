@@ -4,6 +4,8 @@
 #include "wifi_manager.h"
 #include "logbuf.h"
 #include "timekeeper.h"
+#include "version.h"
+#include "updater.h"
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
@@ -13,6 +15,7 @@
 namespace {
     AsyncWebServer server(80);
     WebPortal::ConfigSavedCb g_onSaved = nullptr;
+    WebPortal::DryHandler    g_onDry   = nullptr;
 
     // Latest status snapshot for /api/status.
     PrinterStatus g_status;
@@ -45,6 +48,7 @@ namespace {
         d["brightness"]      = cfg.brightness;
         d["screenTimeoutSec"] = cfg.screenTimeoutSec;
         d["screenSleepEnabled"] = cfg.screenSleepEnabled;
+        d["autoUpdateCheck"] = cfg.autoUpdateCheck;
         d["timezone"]        = cfg.timezone;
         d["dimSchedEnabled"] = cfg.dimSchedEnabled;
         d["dimStartMin"]     = cfg.dimStartMin;
@@ -85,9 +89,15 @@ namespace {
                 uo["count"] = U.count;
                 uo["ht"]    = U.isHT;           // AMS HT (single high-temp slot)
                 uo["model"] = U.isHT ? "AMS HT" : "AMS";
-                if (U.humidity >= 0) uo["humidity"] = U.humidity;
+                if (U.humidity >= 0)    uo["humidity"]    = U.humidity;
+                if (U.humidityPct >= 0) uo["humidityPct"] = U.humidityPct;
+                if (U.tempC > -99.0f)   uo["temp"]        = U.tempC;
+                if (U.drying)           uo["drying"]      = true;
+                if (U.dryTargetC >= 0)  uo["dryTargetC"]  = U.dryTargetC;
+                if (U.dryRemainMin >= 0)uo["dryRemainMin"]= U.dryRemainMin;
                 JsonArray slots = uo["slots"].to<JsonArray>();
-                for (int i = 0; i < 4; i++) {
+                int maxSlots = U.isHT ? 1 : 4;   // HT is physically single-slot
+                for (int i = 0; i < maxSlots; i++) {
                     const AmsSlot& sl = U.slot[i];
                     JsonObject so = slots.add<JsonObject>();
                     so["used"] = sl.present;
@@ -126,7 +136,11 @@ namespace {
         JsonDocument d;
 
         // Firmware / build
-        d["firmware"]   = __DATE__ " " __TIME__;
+        d["firmware"]        = Version::STRING;       // semver (was build date)
+        d["buildDate"]       = Version::BUILD_DATE;
+        d["version"]         = Version::STRING;
+        d["latestVersion"]   = Updater::latestVersion();
+        d["updateAvailable"] = Updater::updateAvailable();
         d["sdk"]        = ESP.getSdkVersion();
         d["resetReason"]= resetReasonStr();
         d["uptimeSec"]  = (uint32_t)(millis() / 1000);
@@ -220,6 +234,7 @@ namespace {
         if (doc["brightness"].is<int>())              cfg.brightness      = constrain((int)doc["brightness"], 10, 100);
         if (doc["screenTimeoutSec"].is<int>())        cfg.screenTimeoutSec = constrain((int)doc["screenTimeoutSec"], 0, 3600);
         if (doc["screenSleepEnabled"].is<bool>())     cfg.screenSleepEnabled = doc["screenSleepEnabled"];
+        if (doc["autoUpdateCheck"].is<bool>())        cfg.autoUpdateCheck = doc["autoUpdateCheck"];
         if (doc["timezone"].is<const char*>())        cfg.timezone        = String((const char*)doc["timezone"]);
         if (doc["dimSchedEnabled"].is<bool>())        cfg.dimSchedEnabled = doc["dimSchedEnabled"];
         if (doc["dimStartMin"].is<int>())             cfg.dimStartMin     = constrain((int)doc["dimStartMin"], 0, 1439);
@@ -336,6 +351,19 @@ void begin(ConfigSavedCb onSaved) {
         req->onDisconnect([]() { delay(300); ESP.restart(); });
     });
 
+    // Start/stop AMS HT drying. ?action=start (default) | stop. Temperature and
+    // duration are derived on-device from the loaded filament. Open like the
+    // other printer controls (trusted-LAN assumption).
+    server.on("/api/dry", HTTP_POST, [](AsyncWebServerRequest* req) {
+        bool start = true;
+        if (req->hasParam("action", true))
+            start = req->getParam("action", true)->value() != "stop";
+        else if (req->hasParam("action"))
+            start = req->getParam("action")->value() != "stop";
+        if (g_onDry) g_onDry(start);
+        req->send(200, "application/json", "{\"ok\":true}");
+    });
+
     // Firmware update (OTA over HTTP). The .bin is POSTed as the RAW request body
     // (application/octet-stream), not multipart: that keeps memory low so a large
     // upload doesn't reset the connection while the Bambu MQTT TLS buffer is
@@ -376,6 +404,24 @@ void begin(ConfigSavedCb onSaved) {
             }
         });
 
+    // Trigger a GitHub release pull (confirmed OTA). Requires the admin password.
+    // Refuses while a print is active or when no update is known. The actual
+    // download/flash happens in the main loop (Updater::loop -> apply).
+    server.on("/api/update/github", HTTP_POST, [](AsyncWebServerRequest* req) {
+        if (!otaAuthed(req)) return req->requestAuthentication();
+        if (g_status.state == PrintState::PRINTING ||
+            g_status.state == PrintState::PAUSED) {
+            req->send(409, "application/json", "{\"ok\":false,\"error\":\"print active\"}");
+            return;
+        }
+        if (!Updater::updateAvailable()) {
+            req->send(409, "application/json", "{\"ok\":false,\"error\":\"no update\"}");
+            return;
+        }
+        Updater::requestApply();
+        req->send(202, "application/json", "{\"ok\":true}");
+    });
+
     // Captive portal: in AP mode, redirect every unknown request (including the
     // OS connectivity probes like /generate_204 and /hotspot-detect.html) to the
     // config page so the "sign in to network" sheet pops up. In STA mode just
@@ -397,5 +443,7 @@ void updateStatus(const PrinterStatus& s, const String& label) {
 }
 
 int otaProgress() { return g_otaPct; }
+
+void setDryHandler(DryHandler cb) { g_onDry = cb; }
 
 }  // namespace WebPortal

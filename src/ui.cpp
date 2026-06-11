@@ -3,6 +3,8 @@
 #include "logbuf.h"
 #include "display.h"
 #include "wifi_manager.h"
+#include "updater.h"
+#include "version.h"
 #include <lvgl.h>
 #include <WiFi.h>
 
@@ -34,7 +36,8 @@ lv_obj_t* ic_nozzle, *lbl_nozzle, *ic_bed, *lbl_bed, *ic_eta, *lbl_eta, *ic_laye
 lv_obj_t* dt_state, *dt_file, *dt_swatch, *dt_type, *dt_slot;
 
 // --- System widgets (minimal & airy) ---
-lv_obj_t* sy_wifi, *sy_ip, *sy_bright;
+lv_obj_t* sy_wifi, *sy_ip, *sy_bright, *sy_ver, *sy_upd, *btn_upd;
+PrintState g_lastState = PrintState::OFFLINE;  // for the update button print-guard
 
 // --- AMS widgets ---
 lv_obj_t* ams_tile[4], *ams_type[4], *ams_remain[4];
@@ -46,6 +49,7 @@ int       amsUnitIdx = 0; // currently shown AMS unit
 
 // --- Controls widgets ---
 lv_obj_t* btn_pause, *btn_resume, *btn_stop;
+lv_obj_t* btn_dry, *btn_dry_lbl;   // AMS HT drying toggle (on the AMS screen)
 
 // --- Idle screen widgets ---
 lv_obj_t* id_printer, *id_state, *id_temps;
@@ -128,9 +132,32 @@ void ctrl_cb(lv_event_t* e) {
     if (g_ctrl) g_ctrl(c);
 }
 
+// Long-press on the AMS HT "Dry" button: toggle drying for the HT unit. Start
+// vs. stop is decided from the current drying state (hold-to-confirm, matching
+// the Stop/Reboot idiom).
+void dry_cb(lv_event_t* /*e*/) {
+    const AmsInfo& a = g_ams;
+    for (uint8_t i = 0; i < a.units; i++) {
+        if (!a.unit[i].isHT) continue;
+        UI::Ctrl c = a.unit[i].drying ? UI::CTRL_DRY_STOP : UI::CTRL_DRY_START;
+        Log::printf("[UI] dry toggle -> %d\n", (int)c);
+        if (g_ctrl) g_ctrl(c);
+        return;
+    }
+}
+
 void reboot_cb(lv_event_t* /*e*/) {
     Log::printf("[UI] reboot requested\n");
     ESP.restart();
+}
+
+void update_cb(lv_event_t* /*e*/) {
+    if (g_lastState == PrintState::PRINTING || g_lastState == PrintState::PAUSED) {
+        Log::printf("[UI] update blocked (print active)\n");
+        return;
+    }
+    Log::printf("[UI] firmware update confirmed\n");
+    Updater::requestApply();
 }
 
 void bright_cb(lv_event_t* e) {
@@ -383,6 +410,11 @@ void buildSystemScreen() {
     lv_obj_set_style_text_color(sy_ip, lv_color_hex(0x9aa4ad), 0);
     lv_label_set_text(sy_ip, "0.0.0.0");
 
+    sy_ver = lv_label_create(col);
+    lv_obj_set_style_text_font(sy_ver, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(sy_ver, lv_color_hex(0x6b7480), 0);
+    lv_label_set_text(sy_ver, "v?");
+
     // Brightness row: [-]  value  [+]
     lv_obj_t* brow = lv_obj_create(col);
     lv_obj_remove_style_all(brow);
@@ -408,6 +440,19 @@ void buildSystemScreen() {
     lv_obj_add_flag(bp, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_add_event_cb(bp, bright_cb, LV_EVENT_CLICKED, (void*)(intptr_t)10);
     lv_obj_t* bpl = lv_label_create(bp); lv_label_set_text(bpl, LV_SYMBOL_PLUS); lv_obj_center(bpl);
+
+    // Update: shown only when a newer release exists; long-press to confirm
+    // (mirrors the reboot/stop long-press pattern). Hidden by default.
+    btn_upd = lv_btn_create(col);
+    lv_obj_set_size(btn_upd, 150, 36);
+    lv_obj_add_flag(btn_upd, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_set_style_bg_color(btn_upd, lv_palette_darken(LV_PALETTE_GREEN, 1), 0);
+    lv_obj_set_style_radius(btn_upd, 10, 0);
+    lv_obj_add_event_cb(btn_upd, update_cb, LV_EVENT_LONG_PRESSED, NULL);
+    sy_upd = lv_label_create(btn_upd);
+    lv_label_set_text(sy_upd, LV_SYMBOL_DOWNLOAD "  Hold = Update");
+    lv_obj_center(sy_upd);
+    lv_obj_add_flag(btn_upd, LV_OBJ_FLAG_HIDDEN);
 
     // Reboot: long-press to avoid accidental restarts (mirrors "Hold = Stop").
     lv_obj_t* rb = lv_btn_create(col);
@@ -506,6 +551,21 @@ void buildAmsScreen() {
         lv_obj_set_style_bg_color(amsDot[i], lv_color_hex(0x3a424c), 0);
     }
     lv_obj_add_flag(amsDots, LV_OBJ_FLAG_HIDDEN);
+
+    // AMS HT drying toggle: long-press to confirm (mirrors "Hold = Stop").
+    // Overlaid at the bottom so it doesn't disturb the centred column layout;
+    // only shown when the current unit is an AMS HT (see renderAms).
+    btn_dry = lv_btn_create(scr_ams);
+    lv_obj_set_size(btn_dry, 130, 34);
+    lv_obj_align(btn_dry, LV_ALIGN_BOTTOM_MID, 0, -16);
+    lv_obj_add_flag(btn_dry, LV_OBJ_FLAG_EVENT_BUBBLE);   // let swipes pass through
+    lv_obj_set_style_bg_color(btn_dry, lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
+    lv_obj_set_style_radius(btn_dry, 10, 0);
+    lv_obj_add_event_cb(btn_dry, dry_cb, LV_EVENT_LONG_PRESSED, NULL);
+    btn_dry_lbl = lv_label_create(btn_dry);
+    lv_label_set_text(btn_dry_lbl, LV_SYMBOL_CHARGE " Hold = Dry");
+    lv_obj_center(btn_dry_lbl);
+    lv_obj_add_flag(btn_dry, LV_OBJ_FLAG_HIDDEN);
 }
 
 lv_obj_t* makeCtrlButton(lv_obj_t* col, const char* text, lv_color_t color,
@@ -790,6 +850,14 @@ void refreshSystem() {
         lv_label_set_text(sy_wifi, LV_SYMBOL_WIFI "  offline");
     lv_label_set_text(sy_ip, WifiManager::ip().c_str());
     lv_label_set_text_fmt(sy_bright, "%d%%", (int)cfg.brightness);
+    lv_label_set_text_fmt(sy_ver, "v%s", Version::STRING);
+    if (Updater::updateAvailable()) {
+        lv_label_set_text_fmt(sy_upd, LV_SYMBOL_DOWNLOAD "  v%s  (hold)",
+                              Updater::latestVersion().c_str());
+        lv_obj_clear_flag(btn_upd, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(btn_upd, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void refreshIdle(const PrinterStatus& s, const String& label) {
@@ -873,8 +941,34 @@ void renderAms() {
         lv_obj_set_style_border_width(ams_tile[i], active ? 3 : 2, 0);
     }
 
-    if (U.humidity >= 0) lv_label_set_text_fmt(ams_humid, "Humidity  %d/5", U.humidity);
-    else                 lv_label_set_text(ams_humid, "");
+    // Humidity / temperature line: prefer the actual RH% over the 1..5 level.
+    char hum[48];
+    int n = 0;
+    if (U.humidityPct >= 0)   n += snprintf(hum + n, sizeof(hum) - n, "RH %d%%", U.humidityPct);
+    else if (U.humidity >= 0) n += snprintf(hum + n, sizeof(hum) - n, "Humidity %d/5", U.humidity);
+    if (U.tempC > -99.0f)     n += snprintf(hum + n, sizeof(hum) - n, "%s%d\xC2\xB0",
+                                            n ? "  " : "", (int)(U.tempC + 0.5f));
+    lv_label_set_text(ams_humid, hum);
+
+    // Drying toggle button — only on the AMS HT unit.
+    if (U.isHT) {
+        lv_obj_clear_flag(btn_dry, LV_OBJ_FLAG_HIDDEN);
+        bool loaded = (U.count > 0) && U.slot[0].present;
+        if (U.drying) {
+            if (U.dryRemainMin > 0)
+                lv_label_set_text_fmt(btn_dry_lbl, LV_SYMBOL_STOP " Hold = Stop (%ldm)", (long)U.dryRemainMin);
+            else
+                lv_label_set_text(btn_dry_lbl, LV_SYMBOL_STOP " Hold = Stop");
+            lv_obj_set_style_bg_color(btn_dry, lv_palette_darken(LV_PALETTE_RED, 2), 0);
+            setBtnEnabled(btn_dry, true);
+        } else {
+            lv_label_set_text(btn_dry_lbl, LV_SYMBOL_CHARGE " Hold = Dry");
+            lv_obj_set_style_bg_color(btn_dry, lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
+            setBtnEnabled(btn_dry, loaded);   // nothing to dry when empty
+        }
+    } else {
+        lv_obj_add_flag(btn_dry, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void refreshAms(const AmsInfo& a) {
@@ -918,6 +1012,7 @@ bool isResting(PrintState s) {
 }
 
 void update(const PrinterStatus& s, const String& printerLabel) {
+    g_lastState = s.state;
     static bool started    = false;
     static bool wasResting = false;
 
