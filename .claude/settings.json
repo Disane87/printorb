@@ -5,9 +5,10 @@
       "Bash(ls -la .github)",
       "Bash(ls .github/workflows)",
       "Bash(ls *.csv)",
-      "WebFetch(domain:raw.githubusercontent.com)",
-      "Read(//f//**)",
-      "Bash(pio run *)"
+      "Read(//f//bambulab-ams-spoolman/**)",
+      "Bash(pio run)",
+      "Bash(pio run -t upload)",
+      "Bash(pio run -e esp32-s3-touch-lcd-128)"
     ]
   }
 }
