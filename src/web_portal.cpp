@@ -83,6 +83,8 @@ namespace {
                 JsonObject uo = units.add<JsonObject>();
                 uo["index"] = u;                // for active-slot matching in JS
                 uo["count"] = U.count;
+                uo["ht"]    = U.isHT;           // AMS HT (single high-temp slot)
+                uo["model"] = U.isHT ? "AMS HT" : "AMS";
                 if (U.humidity >= 0) uo["humidity"] = U.humidity;
                 JsonArray slots = uo["slots"].to<JsonArray>();
                 for (int i = 0; i < 4; i++) {

@@ -76,6 +76,11 @@ printer type (the AMS screen only exists for Bambu).
 - **Comments, identifiers and docs in English.** User-facing strings on screen are
   English too.
 - Settings live **only** in `OrbConfig`/NVS — don't hardcode IPs, SSIDs, or codes.
+- **Commits follow [Conventional Commits](https://www.conventionalcommits.org/)**
+  (`feat:`, `fix:`, `feat!:`/`BREAKING CHANGE:`, plus `chore:`/`docs:`/`ci:`/`refactor:`
+  for no-release changes). semantic-release derives the version, `CHANGELOG.md` and
+  GitHub Release from them on every push to `main` — see "Releases & versioning" in
+  the README and `.github/workflows/release-and-deploy.yml`.
 - Keep each printer backend self-contained; shared shape is `PrinterStatus`.
 - ArduinoJson v7: never `auto x = doc["a"]["b"]` (MemberProxy is non-copyable).
   Use `JsonObject o = doc["a"]["b"].to<JsonObject>();` when building filters.

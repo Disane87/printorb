@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(ls -la .github)",
+      "Bash(ls .github/workflows)",
+      "Bash(ls *.csv)",
+      "Read(//f//bambulab-ams-spoolman/**)",
+      "Bash(pio run)",
+      "Bash(pio run -t upload)",
+      "Bash(pio run -e esp32-s3-touch-lcd-128)"
     ]
   }
 }
