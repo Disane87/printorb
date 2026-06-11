@@ -15,6 +15,7 @@
 namespace {
     AsyncWebServer server(80);
     WebPortal::ConfigSavedCb g_onSaved = nullptr;
+    WebPortal::DryHandler    g_onDry   = nullptr;
 
     // Latest status snapshot for /api/status.
     PrinterStatus g_status;
@@ -88,7 +89,12 @@ namespace {
                 uo["count"] = U.count;
                 uo["ht"]    = U.isHT;           // AMS HT (single high-temp slot)
                 uo["model"] = U.isHT ? "AMS HT" : "AMS";
-                if (U.humidity >= 0) uo["humidity"] = U.humidity;
+                if (U.humidity >= 0)    uo["humidity"]    = U.humidity;
+                if (U.humidityPct >= 0) uo["humidityPct"] = U.humidityPct;
+                if (U.tempC > -99.0f)   uo["temp"]        = U.tempC;
+                if (U.drying)           uo["drying"]      = true;
+                if (U.dryTargetC >= 0)  uo["dryTargetC"]  = U.dryTargetC;
+                if (U.dryRemainMin >= 0)uo["dryRemainMin"]= U.dryRemainMin;
                 JsonArray slots = uo["slots"].to<JsonArray>();
                 int maxSlots = U.isHT ? 1 : 4;   // HT is physically single-slot
                 for (int i = 0; i < maxSlots; i++) {
@@ -345,6 +351,19 @@ void begin(ConfigSavedCb onSaved) {
         req->onDisconnect([]() { delay(300); ESP.restart(); });
     });
 
+    // Start/stop AMS HT drying. ?action=start (default) | stop. Temperature and
+    // duration are derived on-device from the loaded filament. Open like the
+    // other printer controls (trusted-LAN assumption).
+    server.on("/api/dry", HTTP_POST, [](AsyncWebServerRequest* req) {
+        bool start = true;
+        if (req->hasParam("action", true))
+            start = req->getParam("action", true)->value() != "stop";
+        else if (req->hasParam("action"))
+            start = req->getParam("action")->value() != "stop";
+        if (g_onDry) g_onDry(start);
+        req->send(200, "application/json", "{\"ok\":true}");
+    });
+
     // Firmware update (OTA over HTTP). The .bin is POSTed as the RAW request body
     // (application/octet-stream), not multipart: that keeps memory low so a large
     // upload doesn't reset the connection while the Bambu MQTT TLS buffer is
@@ -424,5 +443,7 @@ void updateStatus(const PrinterStatus& s, const String& label) {
 }
 
 int otaProgress() { return g_otaPct; }
+
+void setDryHandler(DryHandler cb) { g_onDry = cb; }
 
 }  // namespace WebPortal

@@ -9,9 +9,13 @@
 
 namespace WebPortal {
     typedef void (*ConfigSavedCb)();
+    typedef void (*DryHandler)(bool start);   // AMS HT drying toggle
 
     /** Start the HTTP server. `onSaved` is invoked after settings are stored. */
     void begin(ConfigSavedCb onSaved);
+
+    /** Register the handler invoked by POST /api/dry (start/stop AMS HT drying). */
+    void setDryHandler(DryHandler cb);
 
     /** Push the latest status so /api/status can serve it. */
     void updateStatus(const PrinterStatus& s, const String& label);

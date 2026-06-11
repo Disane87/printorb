@@ -26,6 +26,8 @@ public:
     void pause()  override;
     void resume() override;
     void stop()   override;
+    bool startDrying(int amsRawId, int tempC, int durationH) override;
+    bool stopDrying(int amsRawId) override;
 
     /** Static trampoline target. */
     void onMessage(char* topic, uint8_t* payload, unsigned int len);

@@ -9,7 +9,7 @@
 #include "config.h"
 
 namespace UI {
-    enum Ctrl { CTRL_PAUSE, CTRL_RESUME, CTRL_STOP };
+    enum Ctrl { CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, CTRL_DRY_START, CTRL_DRY_STOP };
     typedef void (*ControlCb)(Ctrl);
 
     /** Build all widgets. Call once after Display::begin(). */

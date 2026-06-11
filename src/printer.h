@@ -31,6 +31,11 @@ struct AmsUnit {
     int16_t rawId    = -1;         // raw Bambu ams id (0..3 / 128.., -1 = unknown)
     uint8_t count    = 0;          // populated trays (1 for HT, usually 4 otherwise)
     int8_t  humidity = -1;         // dryness level 1..5, -1 = unknown
+    int16_t humidityPct = -1;      // actual relative humidity %, -1 = unknown
+    float   tempC    = -100.0f;    // AMS chamber temperature °C, < -99 = unknown
+    bool    drying      = false;   // true while a drying cycle is running (HT)
+    int16_t dryTargetC  = -1;      // configured drying temperature °C, -1 = none
+    int32_t dryRemainMin = -1;     // remaining drying time (minutes), -1 = unknown
     AmsSlot slot[4];
 };
 
@@ -90,6 +95,14 @@ public:
     virtual void pause()  {}
     virtual void resume() {}
     virtual void stop()   {}
+
+    /**
+     * AMS HT filament drying (Bambu only; no-op elsewhere). `amsRawId` is the raw
+     * Bambu AMS id (e.g. 128 for the first HT), `tempC` the target temperature and
+     * `durationH` the duration in hours. Returns true if the command was sent.
+     */
+    virtual bool startDrying(int /*amsRawId*/, int /*tempC*/, int /*durationH*/) { return false; }
+    virtual bool stopDrying(int /*amsRawId*/) { return false; }
 
     /** Latest known status. */
     const PrinterStatus& status() const { return _status; }

@@ -49,6 +49,7 @@ int       amsUnitIdx = 0; // currently shown AMS unit
 
 // --- Controls widgets ---
 lv_obj_t* btn_pause, *btn_resume, *btn_stop;
+lv_obj_t* btn_dry, *btn_dry_lbl;   // AMS HT drying toggle (on the AMS screen)
 
 // --- Idle screen widgets ---
 lv_obj_t* id_printer, *id_state, *id_temps;
@@ -129,6 +130,20 @@ void ctrl_cb(lv_event_t* e) {
     UI::Ctrl c = (UI::Ctrl)(intptr_t)lv_event_get_user_data(e);
     Log::printf("[UI] control %d\n", (int)c);
     if (g_ctrl) g_ctrl(c);
+}
+
+// Long-press on the AMS HT "Dry" button: toggle drying for the HT unit. Start
+// vs. stop is decided from the current drying state (hold-to-confirm, matching
+// the Stop/Reboot idiom).
+void dry_cb(lv_event_t* /*e*/) {
+    const AmsInfo& a = g_ams;
+    for (uint8_t i = 0; i < a.units; i++) {
+        if (!a.unit[i].isHT) continue;
+        UI::Ctrl c = a.unit[i].drying ? UI::CTRL_DRY_STOP : UI::CTRL_DRY_START;
+        Log::printf("[UI] dry toggle -> %d\n", (int)c);
+        if (g_ctrl) g_ctrl(c);
+        return;
+    }
 }
 
 void reboot_cb(lv_event_t* /*e*/) {
@@ -536,6 +551,21 @@ void buildAmsScreen() {
         lv_obj_set_style_bg_color(amsDot[i], lv_color_hex(0x3a424c), 0);
     }
     lv_obj_add_flag(amsDots, LV_OBJ_FLAG_HIDDEN);
+
+    // AMS HT drying toggle: long-press to confirm (mirrors "Hold = Stop").
+    // Overlaid at the bottom so it doesn't disturb the centred column layout;
+    // only shown when the current unit is an AMS HT (see renderAms).
+    btn_dry = lv_btn_create(scr_ams);
+    lv_obj_set_size(btn_dry, 130, 34);
+    lv_obj_align(btn_dry, LV_ALIGN_BOTTOM_MID, 0, -16);
+    lv_obj_add_flag(btn_dry, LV_OBJ_FLAG_EVENT_BUBBLE);   // let swipes pass through
+    lv_obj_set_style_bg_color(btn_dry, lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
+    lv_obj_set_style_radius(btn_dry, 10, 0);
+    lv_obj_add_event_cb(btn_dry, dry_cb, LV_EVENT_LONG_PRESSED, NULL);
+    btn_dry_lbl = lv_label_create(btn_dry);
+    lv_label_set_text(btn_dry_lbl, LV_SYMBOL_CHARGE " Hold = Dry");
+    lv_obj_center(btn_dry_lbl);
+    lv_obj_add_flag(btn_dry, LV_OBJ_FLAG_HIDDEN);
 }
 
 lv_obj_t* makeCtrlButton(lv_obj_t* col, const char* text, lv_color_t color,
@@ -911,8 +941,34 @@ void renderAms() {
         lv_obj_set_style_border_width(ams_tile[i], active ? 3 : 2, 0);
     }
 
-    if (U.humidity >= 0) lv_label_set_text_fmt(ams_humid, "Humidity  %d/5", U.humidity);
-    else                 lv_label_set_text(ams_humid, "");
+    // Humidity / temperature line: prefer the actual RH% over the 1..5 level.
+    char hum[48];
+    int n = 0;
+    if (U.humidityPct >= 0)   n += snprintf(hum + n, sizeof(hum) - n, "RH %d%%", U.humidityPct);
+    else if (U.humidity >= 0) n += snprintf(hum + n, sizeof(hum) - n, "Humidity %d/5", U.humidity);
+    if (U.tempC > -99.0f)     n += snprintf(hum + n, sizeof(hum) - n, "%s%d\xC2\xB0",
+                                            n ? "  " : "", (int)(U.tempC + 0.5f));
+    lv_label_set_text(ams_humid, hum);
+
+    // Drying toggle button — only on the AMS HT unit.
+    if (U.isHT) {
+        lv_obj_clear_flag(btn_dry, LV_OBJ_FLAG_HIDDEN);
+        bool loaded = (U.count > 0) && U.slot[0].present;
+        if (U.drying) {
+            if (U.dryRemainMin > 0)
+                lv_label_set_text_fmt(btn_dry_lbl, LV_SYMBOL_STOP " Hold = Stop (%ldm)", (long)U.dryRemainMin);
+            else
+                lv_label_set_text(btn_dry_lbl, LV_SYMBOL_STOP " Hold = Stop");
+            lv_obj_set_style_bg_color(btn_dry, lv_palette_darken(LV_PALETTE_RED, 2), 0);
+            setBtnEnabled(btn_dry, true);
+        } else {
+            lv_label_set_text(btn_dry_lbl, LV_SYMBOL_CHARGE " Hold = Dry");
+            lv_obj_set_style_bg_color(btn_dry, lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
+            setBtnEnabled(btn_dry, loaded);   // nothing to dry when empty
+        }
+    } else {
+        lv_obj_add_flag(btn_dry, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void refreshAms(const AmsInfo& a) {

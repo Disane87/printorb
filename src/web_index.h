@@ -47,6 +47,9 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   label.ck input{width:auto}
   .amshdr{display:flex;justify-content:space-between;align-items:center}
   .amshdr .hum{color:var(--mut);font-size:13px}
+  .dryrow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px}
+  .dryrow .drystat{color:var(--mut);font-size:13px}
+  .ghost[disabled]{opacity:.45;cursor:not-allowed}
   .amsgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
   .slot{aspect-ratio:1;border:2px solid var(--bd);border-radius:10px;display:flex;
     flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:4px;
@@ -307,8 +310,12 @@ function renderAms(a){
   if(!a||!a.present){box.innerHTML='<div class="card">No AMS connected.</div>';return;}
   var h='';
   (a.unit||[]).forEach(function(u){
-    h+='<div class="card"><div class="amshdr"><b>AMS '+(u.index+1)+'</b>';
-    if(u.humidity!=null)h+='<span class="hum">Humidity '+u.humidity+'/5</span>';
+    h+='<div class="card"><div class="amshdr"><b>'+(u.model||'AMS')+' '+(u.index+1)+'</b>';
+    var meta=[];
+    if(u.humidityPct!=null)meta.push('RH '+u.humidityPct+'%');
+    else if(u.humidity!=null)meta.push('Humidity '+u.humidity+'/5');
+    if(u.temp!=null)meta.push(u.temp.toFixed(1)+'&deg;C');
+    if(meta.length)h+='<span class="hum">'+meta.join(' &middot; ')+'</span>';
     h+='</div><div class="amsgrid">';
     (u.slots||[]).forEach(function(s,i){
       var active=(a.activeUnit===u.index&&a.activeSlot===i);
@@ -321,9 +328,26 @@ function renderAms(a){
         h+='<div class="slot empty"'+(active?' style="border-color:var(--ac);border-width:3px;border-style:solid"':'')+'><span class="ty">empty</span></div>';
       }
     });
-    h+='</div></div>';
+    h+='</div>';
+    if(u.ht){
+      if(u.drying){
+        var info='Drying'+(u.dryTargetC!=null?' '+u.dryTargetC+'&deg;C':'')
+                +(u.dryRemainMin!=null?' &middot; '+u.dryRemainMin+' min':'');
+        h+='<div class="dryrow"><span class="drystat">'+info+'</span>'
+          +'<button class="ghost" style="color:#f85149;border-color:#f85149" onclick="dry(\'stop\')">Stop drying</button></div>';
+      }else{
+        var canDry=!!(u.slots&&u.slots[0]&&u.slots[0].used);
+        h+='<div class="dryrow"><span class="drystat">'+(canDry?'':'Load filament to dry')+'</span>'
+          +'<button class="ghost" onclick="dry(\'start\')"'+(canDry?'':' disabled')+'>Dry</button></div>';
+      }
+    }
+    h+='</div>';
   });
   box.innerHTML=h;
+}
+async function dry(action){
+  try{await fetch('/api/dry?action='+action,{method:'POST'});}catch(e){}
+  setTimeout(loadStatus,600);
 }
 async function loadLog(){
   try{

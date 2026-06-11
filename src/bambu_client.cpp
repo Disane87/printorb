@@ -97,6 +97,31 @@ void BambuClient::pause()  { sendCommand("pause"); }
 void BambuClient::resume() { sendCommand("resume"); }
 void BambuClient::stop()   { sendCommand("stop"); }
 
+// AMS HT drying. `ams_filament_drying` is a print-class command; mode 1 starts,
+// mode 0 stops. temp/cooling_temp must be >= 45 or firmware ignores it.
+bool BambuClient::startDrying(int amsRawId, int tempC, int durationH) {
+    if (!_mqtt.connected()) { Log::printf("[Bambu] dry-start ignored (offline)\n"); return false; }
+    if (tempC < 45) tempC = 45;
+    String topic = "device/" + _serial + "/request";
+    String msg = String("{\"print\":{\"command\":\"ams_filament_drying\",\"ams_id\":") + amsRawId +
+                 ",\"mode\":1,\"temp\":" + tempC + ",\"cooling_temp\":" + tempC +
+                 ",\"duration\":" + durationH + ",\"humidity\":0,\"rotate_tray\":false,\"sequence_id\":\"1\"}}";
+    bool ok = _mqtt.publish(topic.c_str(), msg.c_str());
+    Log::printf("[Bambu] dry-start ams=%d %dC %dh -> %d\n", amsRawId, tempC, durationH, ok);
+    return ok;
+}
+
+bool BambuClient::stopDrying(int amsRawId) {
+    if (!_mqtt.connected()) { Log::printf("[Bambu] dry-stop ignored (offline)\n"); return false; }
+    String topic = "device/" + _serial + "/request";
+    String msg = String("{\"print\":{\"command\":\"ams_filament_drying\",\"ams_id\":") + amsRawId +
+                 ",\"mode\":0,\"temp\":0,\"cooling_temp\":40,\"duration\":0,\"humidity\":0,"
+                 "\"rotate_tray\":false,\"sequence_id\":\"1\"}}";
+    bool ok = _mqtt.publish(topic.c_str(), msg.c_str());
+    Log::printf("[Bambu] dry-stop ams=%d -> %d\n", amsRawId, ok);
+    return ok;
+}
+
 void BambuClient::onMessage(char* /*topic*/, uint8_t* payload, unsigned int len) {
     // We only care about messages containing a "print" object.
     JsonDocument filter;
@@ -186,7 +211,17 @@ void BambuClient::onMessage(char* /*topic*/, uint8_t* payload, unsigned int len)
                 U.rawId  = (int16_t)id;
                 U.isHT   = (id >= 128);
                 U.present  = true;
-                U.humidity = atoi((const char*)(u["humidity"] | "-1"));
+                U.humidity    = atoi((const char*)(u["humidity"]     | "-1"));
+                U.humidityPct = atoi((const char*)(u["humidity_raw"] | "-1"));
+                U.tempC       = atof((const char*)(u["temp"]         | "-100"));
+                // Drying state: dry_time counts down (minutes) while a cycle runs;
+                // dry_setting.dry_temperature holds the configured target. Both read
+                // -1 / 0 when idle.
+                int dryTime    = u["dry_time"] | 0;
+                int drySetTemp = u["dry_setting"]["dry_temperature"] | -1;
+                U.drying       = dryTime > 0;
+                U.dryRemainMin = dryTime > 0 ? dryTime : -1;
+                U.dryTargetC   = drySetTemp > 0 ? drySetTemp : -1;
                 uint8_t maxSlots = U.isHT ? 1 : 4;   // HT is physically single-slot
                 uint8_t n = 0;
                 for (JsonObject t : u["tray"].as<JsonArray>()) {
