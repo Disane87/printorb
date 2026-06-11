@@ -3,6 +3,8 @@
 #include "logbuf.h"
 #include "display.h"
 #include "wifi_manager.h"
+#include "updater.h"
+#include "version.h"
 #include <lvgl.h>
 #include <WiFi.h>
 
@@ -34,7 +36,8 @@ lv_obj_t* ic_nozzle, *lbl_nozzle, *ic_bed, *lbl_bed, *ic_eta, *lbl_eta, *ic_laye
 lv_obj_t* dt_state, *dt_file, *dt_swatch, *dt_type, *dt_slot;
 
 // --- System widgets (minimal & airy) ---
-lv_obj_t* sy_wifi, *sy_ip, *sy_bright;
+lv_obj_t* sy_wifi, *sy_ip, *sy_bright, *sy_ver, *sy_upd, *btn_upd;
+PrintState g_lastState = PrintState::OFFLINE;  // for the update button print-guard
 
 // --- AMS widgets ---
 lv_obj_t* ams_tile[4], *ams_type[4], *ams_remain[4];
@@ -131,6 +134,15 @@ void ctrl_cb(lv_event_t* e) {
 void reboot_cb(lv_event_t* /*e*/) {
     Log::printf("[UI] reboot requested\n");
     ESP.restart();
+}
+
+void update_cb(lv_event_t* /*e*/) {
+    if (g_lastState == PrintState::PRINTING || g_lastState == PrintState::PAUSED) {
+        Log::printf("[UI] update blocked (print active)\n");
+        return;
+    }
+    Log::printf("[UI] firmware update confirmed\n");
+    Updater::requestApply();
 }
 
 void bright_cb(lv_event_t* e) {
@@ -383,6 +395,11 @@ void buildSystemScreen() {
     lv_obj_set_style_text_color(sy_ip, lv_color_hex(0x9aa4ad), 0);
     lv_label_set_text(sy_ip, "0.0.0.0");
 
+    sy_ver = lv_label_create(col);
+    lv_obj_set_style_text_font(sy_ver, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(sy_ver, lv_color_hex(0x6b7480), 0);
+    lv_label_set_text(sy_ver, "v?");
+
     // Brightness row: [-]  value  [+]
     lv_obj_t* brow = lv_obj_create(col);
     lv_obj_remove_style_all(brow);
@@ -408,6 +425,19 @@ void buildSystemScreen() {
     lv_obj_add_flag(bp, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_add_event_cb(bp, bright_cb, LV_EVENT_CLICKED, (void*)(intptr_t)10);
     lv_obj_t* bpl = lv_label_create(bp); lv_label_set_text(bpl, LV_SYMBOL_PLUS); lv_obj_center(bpl);
+
+    // Update: shown only when a newer release exists; long-press to confirm
+    // (mirrors the reboot/stop long-press pattern). Hidden by default.
+    btn_upd = lv_btn_create(col);
+    lv_obj_set_size(btn_upd, 150, 36);
+    lv_obj_add_flag(btn_upd, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_set_style_bg_color(btn_upd, lv_palette_darken(LV_PALETTE_GREEN, 1), 0);
+    lv_obj_set_style_radius(btn_upd, 10, 0);
+    lv_obj_add_event_cb(btn_upd, update_cb, LV_EVENT_LONG_PRESSED, NULL);
+    sy_upd = lv_label_create(btn_upd);
+    lv_label_set_text(sy_upd, LV_SYMBOL_DOWNLOAD "  Hold = Update");
+    lv_obj_center(sy_upd);
+    lv_obj_add_flag(btn_upd, LV_OBJ_FLAG_HIDDEN);
 
     // Reboot: long-press to avoid accidental restarts (mirrors "Hold = Stop").
     lv_obj_t* rb = lv_btn_create(col);
@@ -790,6 +820,14 @@ void refreshSystem() {
         lv_label_set_text(sy_wifi, LV_SYMBOL_WIFI "  offline");
     lv_label_set_text(sy_ip, WifiManager::ip().c_str());
     lv_label_set_text_fmt(sy_bright, "%d%%", (int)cfg.brightness);
+    lv_label_set_text_fmt(sy_ver, "v%s", Version::STRING);
+    if (Updater::updateAvailable()) {
+        lv_label_set_text_fmt(sy_upd, LV_SYMBOL_DOWNLOAD "  v%s  (hold)",
+                              Updater::latestVersion().c_str());
+        lv_obj_clear_flag(btn_upd, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(btn_upd, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void refreshIdle(const PrinterStatus& s, const String& label) {
@@ -918,6 +956,7 @@ bool isResting(PrintState s) {
 }
 
 void update(const PrinterStatus& s, const String& printerLabel) {
+    g_lastState = s.state;
     static bool started    = false;
     static bool wasResting = false;
 
