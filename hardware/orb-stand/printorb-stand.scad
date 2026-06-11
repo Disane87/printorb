@@ -12,9 +12,11 @@
 // All dimensions parametric — measure your board and adjust [Device].
 // =====================================================================
 
-/* [Device] */
-board_dia     = 39.5;   // [30:0.5:60]  round PCB diameter (mm)
-board_thick   = 9.0;    // [5:0.5:18]   total device thickness front->back
+/* [Device]  — Waveshare ESP32-S3-Touch-LCD-1.28
+   PCB outline Ø38.51±0.05 mm (datasheet); display lens Ø~38.5, viewable Ø32.4.
+   Thickness is NOT published reliably (depends on rear connectors) — MEASURE it. */
+board_dia     = 38.5;   // [30:0.5:60]  round PCB diameter (datasheet 38.51)
+board_thick   = 10.0;   // [5:0.5:18]   total thickness front->back — VERIFY w/ calipers
 fit_clear     = 0.4;    // [0:0.05:1.0] radial clearance around the board
 
 /* [Orb body] */
