@@ -27,7 +27,9 @@ struct AmsSlot {
 // One AMS unit (up to 4 trays).
 struct AmsUnit {
     bool    present  = false;
-    uint8_t count    = 0;          // populated trays (usually 4)
+    bool    isHT     = false;      // AMS HT: single high-temp slot (Bambu id 128..135)
+    int16_t rawId    = -1;         // raw Bambu ams id (0..3 / 128.., -1 = unknown)
+    uint8_t count    = 0;          // populated trays (1 for HT, usually 4 otherwise)
     int8_t  humidity = -1;         // dryness level 1..5, -1 = unknown
     AmsSlot slot[4];
 };

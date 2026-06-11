@@ -178,11 +178,18 @@ void BambuClient::onMessage(char* /*topic*/, uint8_t* payload, unsigned int len)
             for (JsonObject u : units) {
                 if (un >= 4) break;
                 AmsUnit& U = _status.ams.unit[un];
+                // The print payload carries no model name; AMS HT reports its id
+                // in the 128..135 range, which is how we tell it apart from the
+                // AMS / AMS 2 Pro / AMS Lite units (ids 0..3).
+                int id   = atoi((const char*)(u["id"] | "-1"));
+                U.rawId  = (int16_t)id;
+                U.isHT   = (id >= 128);
                 U.present  = true;
                 U.humidity = atoi((const char*)(u["humidity"] | "-1"));
+                uint8_t maxSlots = U.isHT ? 1 : 4;   // HT is physically single-slot
                 uint8_t n = 0;
                 for (JsonObject t : u["tray"].as<JsonArray>()) {
-                    if (n >= 4) break;
+                    if (n >= maxSlots) break;
                     AmsSlot& sl = U.slot[n];
                     sl.type    = String((const char*)(t["tray_type"] | ""));
                     sl.present = sl.type.length() > 0;
@@ -198,13 +205,39 @@ void BambuClient::onMessage(char* /*topic*/, uint8_t* payload, unsigned int len)
             _status.ams.units   = un;
             _status.ams.present = un > 0;
         }
-        int idx = atoi((const char*)(ams["tray_now"] | "255"));
-        if (idx >= 0 && idx < 16) {
-            _status.ams.activeUnit = (int8_t)(idx / 4);
-            _status.ams.activeSlot = (int8_t)(idx % 4);
-        } else {
-            _status.ams.activeUnit = -1;
-            _status.ams.activeSlot = -1;
+        // tray_now is id-based: >=128 = the active AMS HT (slot 0), otherwise
+        // (id<<2 | slot). Map the raw id back to our positional unit index.
+        const char* trayNowStr = ams["tray_now"] | "255";
+        int idx = atoi(trayNowStr);
+        _status.ams.activeUnit = -1;
+        _status.ams.activeSlot = -1;
+        int wantId = -1, wantSlot = -1;
+        if (idx >= 0 && idx != 254 && idx != 255) {
+            wantId   = (idx >= 128) ? idx : (idx >> 2);
+            wantSlot = (idx >= 128) ? 0   : (idx & 3);
+            for (uint8_t i = 0; i < _status.ams.units; i++) {
+                if (_status.ams.unit[i].rawId == wantId) {
+                    _status.ams.activeUnit = (int8_t)i;
+                    _status.ams.activeSlot = (int8_t)wantSlot;
+                    break;
+                }
+            }
+        }
+
+        // TEMP DIAGNOSTIC (active-tray mismatch): log the raw routing inputs
+        // whenever tray_now changes so we can see the real encoding. Remove once
+        // the active-tray mapping is confirmed correct.
+        static String lastTrayNow;
+        String trayNow(trayNowStr);
+        if (trayNow != lastTrayNow) {
+            lastTrayNow = trayNow;
+            Log::printf("[Bambu] tray_now=%s -> wantId=%d slot=%d => activeUnit=%d activeSlot=%d\n",
+                        trayNowStr, wantId, wantSlot,
+                        (int)_status.ams.activeUnit, (int)_status.ams.activeSlot);
+            for (uint8_t i = 0; i < _status.ams.units; i++)
+                Log::printf("[Bambu]   unit[%u] rawId=%d isHT=%d count=%u\n",
+                            i, (int)_status.ams.unit[i].rawId,
+                            (int)_status.ams.unit[i].isHT, _status.ams.unit[i].count);
         }
     }
 

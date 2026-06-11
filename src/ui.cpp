@@ -832,7 +832,8 @@ void renderAms() {
     const AmsUnit& U = a.unit[amsUnitIdx];
 
     if (a.units > 1) {
-        lv_label_set_text_fmt(ams_title, "AMS %d/%d", amsUnitIdx + 1, a.units);
+        if (U.isHT) lv_label_set_text(ams_title, "AMS HT");
+        else        lv_label_set_text_fmt(ams_title, "AMS %d/%d", amsUnitIdx + 1, a.units);
         lv_obj_clear_flag(amsDots, LV_OBJ_FLAG_HIDDEN);
         for (int i = 0; i < 4; i++) {
             if (i < a.units) {
@@ -844,11 +845,14 @@ void renderAms() {
             }
         }
     } else {
-        lv_label_set_text(ams_title, "Filament");
+        lv_label_set_text(ams_title, U.isHT ? "AMS HT" : "Filament");
         lv_obj_add_flag(amsDots, LV_OBJ_FLAG_HIDDEN);
     }
 
+    // AMS HT is single-slot: show one tile, hide the rest (flex re-centres it).
+    int shown = U.isHT ? 1 : 4;
     for (int i = 0; i < 4; i++) {
+        if (i >= shown) { lv_obj_add_flag(ams_tile[i], LV_OBJ_FLAG_HIDDEN); continue; }
         lv_obj_clear_flag(ams_tile[i], LV_OBJ_FLAG_HIDDEN);
         const AmsSlot& sl = U.slot[i];
         bool used = (i < U.count) && sl.present;
