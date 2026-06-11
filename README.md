@@ -86,6 +86,15 @@ pio device monitor      # serial output (115200 baud)
 
 The web UI is embedded in flash – **no separate LittleFS upload needed**.
 
+### Flash from the browser (no toolchain) ⚡
+
+Every push to `main` builds the firmware and publishes a **web flasher** to GitHub
+Pages: **[disane87.github.io/printorb](https://disane87.github.io/printorb/)**.
+Open it in **Chrome / Edge / Opera** on desktop, plug the board in via USB-C and
+click **Connect & Install** — it flashes the merged image over Web Serial, no
+PlatformIO needed. The same merged binary is attached to every
+[GitHub Release](https://github.com/Disane87/printorb/releases).
+
 > **Serial:** the USB-C port is wired through the on-board **CH343 UART bridge**,
 > so `Serial` is routed to UART0 (`ARDUINO_USB_CDC_ON_BOOT=0` in
 > `platformio.ini`). The serial monitor and the web log both show the same
@@ -191,3 +200,27 @@ printorb/
 To clear the settings: call `Config::reset()` (e.g. temporarily in `setup()`),
 flash, boot once, then remove it again. Afterwards the device starts back up in
 the setup AP.
+
+---
+
+## Releases & versioning
+
+Versioning is automated with **[semantic-release](https://semantic-release.gitbook.io/)**
+driven by **[Conventional Commits](https://www.conventionalcommits.org/)**. On every
+push to `main`, CI (`.github/workflows/release-and-deploy.yml`) builds the firmware,
+then semantic-release decides the next version from the commit messages, writes
+`CHANGELOG.md`, tags the repo and creates a GitHub Release with the firmware
+attached — and the web flasher on GitHub Pages is redeployed with that version.
+
+Commit message prefixes that drive the version bump:
+
+| Prefix | Example | Release |
+|--------|---------|---------|
+| `fix:` | `fix: correct AMS slot color mapping` | patch (`x.y.Z`) |
+| `feat:` | `feat: add scheduled display dimming` | minor (`x.Y.0`) |
+| `feat!:` / `BREAKING CHANGE:` footer | `feat!: drop legacy config keys` | major (`X.0.0`) |
+| `chore:` / `docs:` / `refactor:` / `ci:` … | `docs: update wiring notes` | no release |
+
+So: phrase commits as `type: summary` and the changelog + releases take care of
+themselves. No conventional commits since the last tag → no new release (the Pages
+site just redeploys at the current version).

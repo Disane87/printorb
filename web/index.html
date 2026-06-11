@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrintOrb · Web Flasher</title>
+<meta name="description" content="Flash PrintOrb firmware to your Waveshare ESP32-S3-Touch-LCD-1.28 straight from the browser — no toolchain required.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='44' fill='%230d1117' stroke='%2322d3ee' stroke-width='6'/%3E%3Ccircle cx='50' cy='50' r='16' fill='%2322d3ee'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#0d1117;--card:#161b22;--bd:#2b3340;--fg:#e6edf3;--mut:#9aa4ad;
+    --ac:#22d3ee;--ac2:#0891b2;--ok:#3fb950;--err:#f85149;--warn:#d29922;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg);
+    line-height:1.55;min-height:100vh;
+    background-image:radial-gradient(900px 500px at 50% -10%,rgba(34,211,238,.12),transparent 70%);
+  }
+  .wrap{max-width:640px;margin:0 auto;padding:32px 20px 64px}
+  header{text-align:center;margin-bottom:28px}
+  .orb{
+    width:120px;height:120px;margin:0 auto 18px;border-radius:50%;
+    background:radial-gradient(circle at 38% 32%,#3ee9ff 0%,var(--ac) 32%,var(--ac2) 70%,#06414e 100%);
+    box-shadow:0 0 0 6px #0d1117,0 0 0 8px var(--bd),0 0 46px rgba(34,211,238,.45);
+    animation:pulse 3.4s ease-in-out infinite;
+  }
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 6px #0d1117,0 0 0 8px var(--bd),0 0 30px rgba(34,211,238,.30)}
+    50%{box-shadow:0 0 0 6px #0d1117,0 0 0 8px var(--bd),0 0 56px rgba(34,211,238,.60)}}
+  @media (prefers-reduced-motion:reduce){.orb{animation:none}}
+  h1{margin:0;font-size:30px;letter-spacing:.5px;font-weight:700}
+  h1 span{color:var(--ac)}
+  .sub{color:var(--mut);margin-top:6px;font-size:15px}
+  .ver{display:inline-block;margin-top:10px;font-size:12px;color:var(--ac);
+    border:1px solid var(--bd);border-radius:999px;padding:3px 12px;font-family:ui-monospace,Consolas,monospace}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:22px;margin-bottom:18px}
+  .card h2{margin:0 0 12px;font-size:16px}
+  .flashbox{text-align:center;padding:26px 22px}
+  esp-web-install-button{--esp-tools-button-color:#001317;--esp-tools-button-bg-color:var(--ac)}
+  .btn{
+    display:inline-flex;align-items:center;gap:9px;padding:14px 26px;border:0;border-radius:12px;
+    background:var(--ac);color:#001317;font-weight:700;font-size:16px;cursor:pointer;
+    box-shadow:0 6px 22px rgba(34,211,238,.25);transition:transform .08s ease}
+  .btn:hover{transform:translateY(-1px)}
+  .note{font-size:13px;color:var(--mut);margin-top:14px}
+  ol{margin:0;padding-left:20px}
+  ol li{margin:8px 0}
+  .kbd{font-family:ui-monospace,Consolas,monospace;background:var(--bg);border:1px solid var(--bd);
+    border-radius:6px;padding:1px 6px;font-size:12px}
+  .banner{display:none;border-radius:12px;padding:13px 15px;font-size:14px;margin-bottom:18px;
+    border:1px solid;align-items:flex-start;gap:9px}
+  .banner.show{display:flex}
+  .banner.warn{background:rgba(210,153,34,.08);border-color:rgba(210,153,34,.5);color:#f0d28a}
+  .banner.ok{background:rgba(63,185,80,.08);border-color:rgba(63,185,80,.4);color:#86e29b}
+  a{color:var(--ac)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px}
+  .pill{display:block;text-align:center;background:var(--bg);border:1px solid var(--bd);border-radius:10px;
+    padding:11px;color:var(--fg);text-decoration:none;font-size:14px}
+  .pill:hover{border-color:var(--ac)}
+  footer{text-align:center;color:var(--mut);font-size:12px;margin-top:26px}
+  .spec{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--bd);font-size:14px}
+  .spec:last-child{border:0}.spec span{color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="orb" aria-hidden="true"></div>
+    <h1>Print<span>Orb</span></h1>
+    <div class="sub">Flash the firmware to your orb — right from this browser.</div>
+    <a class="ver" id="ver" href="https://github.com/Disane87/printorb/releases" target="_blank" rel="noopener">v…</a>
+  </header>
+
+  <div class="banner warn" id="browserWarn">
+    <span>⚠️</span>
+    <div>Your browser can’t talk to the device over USB. Web flashing needs the
+      <b>Web Serial API</b> — please use <b>Chrome</b>, <b>Edge</b>, or <b>Opera</b> on desktop
+      (not Firefox, Safari, or a phone).</div>
+  </div>
+
+  <div class="card flashbox">
+    <esp-web-install-button manifest="manifest.json">
+      <button type="button" class="btn" slot="activate">⚡ Connect &amp; Install</button>
+      <span slot="unsupported">Web Serial isn’t available — see the note above.</span>
+      <span slot="not-allowed">You need to allow the serial port to continue.</span>
+    </esp-web-install-button>
+    <div class="note">Plug the board in via USB-C, click the button, pick the
+      <span class="kbd">USB-Serial CH343</span> port, and let it flash. ~30&nbsp;seconds.</div>
+  </div>
+
+  <div class="card">
+    <h2>How it works</h2>
+    <ol>
+      <li>Connect the board to your computer with a <b>USB-C data cable</b>.</li>
+      <li>Click <b>Connect &amp; Install</b> and choose the serial port that appears.</li>
+      <li>Confirm the install — the orb is fully erased and flashed with the latest firmware.</li>
+      <li>On first boot it opens a Wi-Fi setup hotspot <span class="kbd">printorb-setup-xxxx</span>;
+        join it to configure your printer.</li>
+    </ol>
+    <div class="note">Stuck in the bootloader? Hold <b>BOOT</b>, tap <b>RESET</b>, release <b>BOOT</b>,
+      then retry. Already running PrintOrb? You can also update wirelessly at
+      <span class="kbd">printorb.local</span> → Update tab.</div>
+  </div>
+
+  <div class="card">
+    <h2>Target hardware</h2>
+    <div class="spec"><span>Board</span><b>Waveshare ESP32-S3-Touch-LCD-1.28</b></div>
+    <div class="spec"><span>MCU</span><b>ESP32-S3 (2&nbsp;MB PSRAM)</b></div>
+    <div class="spec"><span>Display</span><b>1.28″ round 240×240, GC9A01</b></div>
+    <div class="spec"><span>Backends</span><b>Klipper (Moonraker) · Bambu Lab (MQTT)</b></div>
+  </div>
+
+  <div class="card">
+    <h2>Links</h2>
+    <div class="grid">
+      <a class="pill" href="https://github.com/Disane87/printorb" target="_blank" rel="noopener">↗ Source code</a>
+      <a class="pill" href="https://github.com/Disane87/printorb/releases" target="_blank" rel="noopener">↗ Releases &amp; changelog</a>
+    </div>
+  </div>
+
+  <footer>
+    PrintOrb is open-source firmware · flashing happens locally in your browser, nothing is uploaded.
+  </footer>
+</div>
+
+<!-- Pinned to an exact version to avoid silent CDN drift. esp-web-tools is a multi-module
+     ESM bundle, so SRI on this one entry would not cover its transitive imports; pinning is
+     the practical mitigation short of self-hosting the bundle. -->
+<script type="module" src="https://unpkg.com/esp-web-tools@10.0.3/dist/web/install-button.js?module"></script>
+<script>
+  // Browser capability hint
+  if (!('serial' in navigator)) document.getElementById('browserWarn').classList.add('show');
+
+  // Show the firmware version from the manifest
+  fetch('manifest.json', {cache:'no-store'})
+    .then(r => r.json())
+    .then(m => { if (m && m.version) document.getElementById('ver').textContent = 'v' + m.version; })
+    .catch(() => { document.getElementById('ver').textContent = 'dev build'; });
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "printorb",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "ESP32-S3 firmware for the Waveshare ESP32-S3-Touch-LCD-1.28 showing live Klipper/Bambu printer status. This package.json exists only for release tooling (semantic-release); the firmware is built with PlatformIO.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Disane87/printorb.git"
+  },
+  "license": "MIT",
+  "scripts": {
+    "release": "semantic-release"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "semantic-release": "^24.2.0"
+  }
+}

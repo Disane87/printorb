@@ -1,0 +1,14 @@
+{
+  "name": "PrintOrb",
+  "version": "__VERSION__",
+  "home_assistant_domain": "",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "firmware/printorb-merged.bin", "offset": 0 }
+      ]
+    }
+  ]
+}

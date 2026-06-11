@@ -1,0 +1,129 @@
+name: Release & Deploy Web Flasher
+
+# Builds the PrintOrb firmware, runs semantic-release (versioning + CHANGELOG +
+# GitHub Release with firmware assets), then publishes the browser web-flasher
+# (ESP Web Tools) to GitHub Pages.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # semantic-release: create releases + push CHANGELOG/tag
+  pages: write           # deploy to GitHub Pages
+  id-token: write        # Pages OIDC
+  issues: write          # semantic-release: comment on released issues
+  pull-requests: write   # semantic-release: comment on released PRs
+
+# Allow only one release+deploy at a time; don't cancel a publish midway.
+concurrency:
+  group: release-pages
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      published: ${{ steps.semantic.outputs.new_release_published }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # semantic-release needs full history + tags
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'partitions.csv') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO & esptool
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio esptool
+
+      - name: Build firmware
+        run: pio run -e esp32-s3-touch-lcd-128
+
+      - name: Merge flashable image
+        run: |
+          set -euo pipefail
+          BUILD=.pio/build/esp32-s3-touch-lcd-128
+          BOOT_APP0="$(find "$HOME/.platformio/packages/framework-arduinoespressif32" -name boot_app0.bin | head -n1)"
+          echo "Using boot_app0: $BOOT_APP0"
+          mkdir -p web/firmware
+          # ESP32-S3 layout: bootloader@0x0, partitions@0x8000, otadata@0xe000, app@0x10000.
+          # 'keep' preserves the flash mode/freq the bootloader was built with (qio/80m).
+          python -m esptool --chip esp32s3 merge_bin \
+            -o web/firmware/printorb-merged.bin \
+            --flash_mode keep --flash_freq keep --flash_size 4MB \
+            0x0     "$BUILD/bootloader.bin" \
+            0x8000  "$BUILD/partitions.bin" \
+            0xe000  "$BOOT_APP0" \
+            0x10000 "$BUILD/firmware.bin"
+          ls -la web/firmware
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Semantic Release
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          extra_plugins: |
+            @semantic-release/changelog@6
+            @semantic-release/git@10
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve site version
+        id: ver
+        run: |
+          set -euo pipefail
+          V="${{ steps.semantic.outputs.new_release_version }}"
+          if [ -z "$V" ]; then
+            V="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+          fi
+          if [ -z "$V" ]; then
+            V="0.0.0-${GITHUB_SHA::7}"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Site version: $V"
+
+      - name: Inject version into manifest
+        run: |
+          sed -i "s/__VERSION__/${{ steps.ver.outputs.version }}/" web/manifest.json
+          cat web/manifest.json
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true        # auto-enable Pages (source = GitHub Actions) on first run
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
