@@ -14,8 +14,10 @@ lv_obj_t* scr_details  = nullptr;
 lv_obj_t* scr_system   = nullptr;
 lv_obj_t* scr_ams      = nullptr;
 lv_obj_t* scr_controls = nullptr;
+lv_obj_t* scr_idle     = nullptr;
 lv_obj_t* scr_setup    = nullptr;
 lv_obj_t* scr_boot     = nullptr;
+lv_obj_t* scr_update   = nullptr;
 
 lv_obj_t* carousel[5] = {};   // status, details, system, [ams], controls
 int  carCount  = 4;
@@ -29,7 +31,7 @@ lv_obj_t* arc_progress, *lbl_percent, *lbl_state, *lbl_printer, *lbl_file;
 lv_obj_t* ic_nozzle, *lbl_nozzle, *ic_bed, *lbl_bed, *ic_eta, *lbl_eta, *ic_layers, *lbl_layers;
 
 // --- Details widgets (minimal & airy) ---
-lv_obj_t* dt_state, *dt_file, *dt_eta;
+lv_obj_t* dt_state, *dt_file, *dt_swatch, *dt_type, *dt_slot;
 
 // --- System widgets (minimal & airy) ---
 lv_obj_t* sy_wifi, *sy_ip, *sy_bright;
@@ -45,9 +47,15 @@ int       amsUnitIdx = 0; // currently shown AMS unit
 // --- Controls widgets ---
 lv_obj_t* btn_pause, *btn_resume, *btn_stop;
 
+// --- Idle screen widgets ---
+lv_obj_t* id_printer, *id_state, *id_temps;
+
 // --- Boot / setup widgets ---
 lv_obj_t* boot_bar, *boot_step, *boot_detail;
 lv_obj_t* setup_title, *setup_body;
+
+// --- Update (OTA) widgets ---
+lv_obj_t* upd_bar, *upd_pct;
 
 // --- Page indicator dots (on the top layer, above all screens) ---
 lv_obj_t* dots = nullptr;
@@ -88,10 +96,17 @@ void gotoScreen(int idx, lv_scr_load_anim_t anim) {
     updateDots();
 }
 
-void renderAms();  // forward decl (vertical swipe re-renders the AMS unit)
+void renderAms();      // forward decl (vertical swipe re-renders the AMS unit)
+void enterCarousel();  // forward decl (idle screen swipes into the carousel)
 
 void gesture_cb(lv_event_t* /*e*/) {
     lv_dir_t d = lv_indev_get_gesture_dir(lv_indev_get_act());
+
+    // From the idle screen, any horizontal swipe enters the status carousel.
+    if (scr_idle && lv_scr_act() == scr_idle) {
+        if (d == LV_DIR_LEFT || d == LV_DIR_RIGHT) enterCarousel();
+        return;
+    }
 
     // On the AMS screen, vertical swipes cycle through AMS units.
     if (scr_ams && lv_scr_act() == scr_ams && (d == LV_DIR_TOP || d == LV_DIR_BOTTOM)) {
@@ -113,6 +128,11 @@ void ctrl_cb(lv_event_t* e) {
     if (g_ctrl) g_ctrl(c);
 }
 
+void reboot_cb(lv_event_t* /*e*/) {
+    Log::printf("[UI] reboot requested\n");
+    ESP.restart();
+}
+
 void bright_cb(lv_event_t* e) {
     int delta = (int)(intptr_t)lv_event_get_user_data(e);
     int v = (int)cfg.brightness + delta;
@@ -122,6 +142,22 @@ void bright_cb(lv_event_t* e) {
     Display::setBrightness(cfg.brightness);
     Config::save();
     lv_label_set_text_fmt(sy_bright, "%d%%", v);
+}
+
+// Activate the swipeable carousel at the status screen (from boot / idle).
+void enterCarousel() {
+    carActive = true;
+    carIdx = 0;
+    if (lv_scr_act() != scr_status) lv_scr_load(scr_status);
+    lv_obj_clear_flag(dots, LV_OBJ_FLAG_HIDDEN);
+    updateDots();
+}
+
+// Show the standalone idle screen (managed like boot/setup, outside the carousel).
+void showIdle() {
+    carActive = false;
+    if (dots) lv_obj_add_flag(dots, LV_OBJ_FLAG_HIDDEN);
+    if (scr_idle && lv_scr_act() != scr_idle) lv_scr_load(scr_idle);
 }
 
 // ---- Builders ----
@@ -284,25 +320,49 @@ void buildStatusScreen() {
     lv_obj_align(lbl_layers, LV_ALIGN_BOTTOM_MID, 38, -33);
 }
 
+// "Now printing" screen: the active filament shown as a big colour swatch
+// (Bambu AMS), with type / slot / remaining. Klipper has no colour data, so it
+// falls back to a neutral swatch + hint.
 void buildDetailsScreen() {
     scr_details = makeScreen(lv_color_black());
     addRingFrame(scr_details);
     lv_obj_t* col = makeColumn(scr_details, "");
+    lv_obj_set_style_pad_row(col, 10, 0);
 
     dt_state = lv_label_create(col);
-    lv_obj_set_style_text_font(dt_state, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(dt_state, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(dt_state, lv_color_white(), 0);
     lv_label_set_text(dt_state, "Idle");
 
+    // Large circular filament-colour swatch.
+    dt_swatch = lv_obj_create(col);
+    lv_obj_remove_style_all(dt_swatch);
+    lv_obj_set_size(dt_swatch, 78, 78);
+    lv_obj_clear_flag(dt_swatch, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(dt_swatch, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(dt_swatch, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(dt_swatch, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(dt_swatch, lv_color_hex(0x2b3340), 0);
+    lv_obj_set_style_border_width(dt_swatch, 3, 0);
+    lv_obj_set_style_border_color(dt_swatch, lv_color_hex(0x3a424c), 0);
+
+    dt_type = lv_label_create(col);
+    lv_obj_set_style_text_font(dt_type, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(dt_type, lv_color_white(), 0);
+    lv_label_set_text(dt_type, "—");
+
+    dt_slot = lv_label_create(col);
+    lv_obj_set_style_text_font(dt_slot, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(dt_slot, lv_color_hex(0x9aa4ad), 0);
+    lv_label_set_text(dt_slot, "");
+
     dt_file = lv_label_create(col);
     lv_obj_set_style_text_font(dt_file, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(dt_file, lv_color_hex(0x9aa4ad), 0);
+    lv_obj_set_style_text_color(dt_file, lv_color_hex(0x6b7480), 0);
     lv_label_set_long_mode(dt_file, LV_LABEL_LONG_DOT);
     lv_obj_set_width(dt_file, 168);
     lv_obj_set_style_text_align(dt_file, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(dt_file, "");
-
-    dt_eta = addIconRow(col, ORB_ICON_CLOCK, lv_color_hex(0x9aa4ad), &orb_icons);
 }
 
 void buildSystemScreen() {
@@ -348,6 +408,17 @@ void buildSystemScreen() {
     lv_obj_add_flag(bp, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_add_event_cb(bp, bright_cb, LV_EVENT_CLICKED, (void*)(intptr_t)10);
     lv_obj_t* bpl = lv_label_create(bp); lv_label_set_text(bpl, LV_SYMBOL_PLUS); lv_obj_center(bpl);
+
+    // Reboot: long-press to avoid accidental restarts (mirrors "Hold = Stop").
+    lv_obj_t* rb = lv_btn_create(col);
+    lv_obj_set_size(rb, 150, 36);
+    lv_obj_add_flag(rb, LV_OBJ_FLAG_EVENT_BUBBLE);          // let swipes pass through
+    lv_obj_set_style_bg_color(rb, lv_palette_darken(LV_PALETTE_RED, 2), 0);
+    lv_obj_set_style_radius(rb, 10, 0);
+    lv_obj_add_event_cb(rb, reboot_cb, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_t* rbl = lv_label_create(rb);
+    lv_label_set_text(rbl, LV_SYMBOL_POWER "  Hold = Reboot");
+    lv_obj_center(rbl);
 }
 
 void buildAmsScreen() {
@@ -461,6 +532,42 @@ void buildControlsScreen() {
     btn_stop   = makeCtrlButton(col, LV_SYMBOL_STOP  " Hold = Stop", lv_palette_darken(LV_PALETTE_RED, 2),  LV_EVENT_LONG_PRESSED, UI::CTRL_STOP);
 }
 
+void buildIdleScreen() {
+    scr_idle = makeScreen(lv_color_black());
+    addRingFrame(scr_idle);
+    lv_obj_t* col = makeColumn(scr_idle, "");
+    lv_obj_set_style_pad_row(col, 14, 0);
+
+    // Subtle orb (brand mark, same look as the boot screen).
+    lv_obj_t* orb = lv_obj_create(col);
+    lv_obj_set_size(orb, 44, 44);
+    lv_obj_clear_flag(orb, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(orb, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(orb, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(orb, 0, 0);
+    lv_obj_set_style_bg_color(orb, lv_palette_main(LV_PALETTE_CYAN), 0);
+    lv_obj_set_style_bg_grad_color(orb, lv_palette_darken(LV_PALETTE_BLUE, 3), 0);
+    lv_obj_set_style_bg_grad_dir(orb, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_shadow_color(orb, lv_palette_main(LV_PALETTE_CYAN), 0);
+    lv_obj_set_style_shadow_width(orb, 18, 0);
+    lv_obj_set_style_shadow_spread(orb, 1, 0);
+
+    id_printer = lv_label_create(col);
+    lv_obj_set_style_text_font(id_printer, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(id_printer, lv_color_hex(0x9aa4ad), 0);
+    lv_label_set_long_mode(id_printer, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(id_printer, 180);
+    lv_obj_set_style_text_align(id_printer, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(id_printer, "Printer");
+
+    id_state = lv_label_create(col);
+    lv_obj_set_style_text_font(id_state, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(id_state, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+    lv_label_set_text(id_state, "Ready");
+
+    id_temps = addIconRow(col, ORB_ICON_NOZZLE, lv_palette_main(LV_PALETTE_ORANGE), &orb_icons);
+}
+
 void buildSetupScreen() {
     scr_setup = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(scr_setup, lv_color_hex(0x101418), 0);
@@ -532,6 +639,54 @@ void buildBootScreen() {
     lv_obj_align(boot_detail, LV_ALIGN_CENTER, 0, 68);
 }
 
+void buildUpdateScreen() {
+    scr_update = makeScreen(lv_color_black());
+    addRingFrame(scr_update);
+
+    // Glowing orb mark, matching the boot screen's brand feel (amber = "busy").
+    lv_obj_t* orb = lv_obj_create(scr_update);
+    lv_obj_set_size(orb, 56, 56);
+    lv_obj_clear_flag(orb, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(orb, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(orb, 0, 0);
+    lv_obj_set_style_bg_color(orb, lv_palette_main(LV_PALETTE_AMBER), 0);
+    lv_obj_set_style_bg_grad_color(orb, lv_palette_darken(LV_PALETTE_ORANGE, 3), 0);
+    lv_obj_set_style_bg_grad_dir(orb, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_shadow_color(orb, lv_palette_main(LV_PALETTE_AMBER), 0);
+    lv_obj_set_style_shadow_width(orb, 22, 0);
+    lv_obj_set_style_shadow_spread(orb, 1, 0);
+    lv_obj_align(orb, LV_ALIGN_TOP_MID, 0, 44);
+
+    lv_obj_t* title = lv_label_create(scr_update);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_label_set_text(title, "Updating");
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 108);
+
+    upd_pct = lv_label_create(scr_update);
+    lv_obj_set_style_text_color(upd_pct, lv_palette_main(LV_PALETTE_AMBER), 0);
+    lv_obj_set_style_text_font(upd_pct, &lv_font_montserrat_28, 0);
+    lv_label_set_text(upd_pct, "0%");
+    lv_obj_align(upd_pct, LV_ALIGN_CENTER, 0, 4);
+
+    upd_bar = lv_bar_create(scr_update);
+    lv_obj_set_size(upd_bar, 150, 8);
+    lv_obj_align(upd_bar, LV_ALIGN_CENTER, 0, 40);
+    lv_bar_set_range(upd_bar, 0, 100);
+    lv_bar_set_value(upd_bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_radius(upd_bar, 4, LV_PART_MAIN);
+    lv_obj_set_style_radius(upd_bar, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(upd_bar, lv_color_hex(0x2a2218), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(upd_bar, lv_palette_main(LV_PALETTE_AMBER), LV_PART_INDICATOR);
+
+    lv_obj_t* warn = lv_label_create(scr_update);
+    lv_obj_set_style_text_color(warn, lv_color_hex(0x6b7480), 0);
+    lv_obj_set_style_text_font(warn, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_align(warn, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(warn, "Do not power off");
+    lv_obj_align(warn, LV_ALIGN_CENTER, 0, 64);
+}
+
 void buildDots(int count) {
     dots = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(dots);
@@ -582,9 +737,37 @@ void refreshStatus(const PrinterStatus& s, const String& label) {
 void refreshDetails(const PrinterStatus& s, const String& label) {
     lv_label_set_text(dt_state, PrinterStatus::stateLabel(s.state));
     lv_obj_set_style_text_color(dt_state, stateColor(s.state), 0);
+
+    // Resolve the active filament from the AMS snapshot (Bambu). -1 indices or
+    // an absent/empty slot mean we have no colour to show.
+    const AmsInfo& a = s.ams;
+    const AmsSlot* sl = nullptr;
+    if (a.present && a.activeUnit >= 0 && a.activeUnit < 4 &&
+        a.activeSlot >= 0 && a.activeSlot < 4) {
+        const AmsSlot& cand = a.unit[a.activeUnit].slot[a.activeSlot];
+        if (cand.present) sl = &cand;
+    }
+
+    if (sl) {
+        lv_obj_set_style_bg_color(dt_swatch, lv_color_hex(sl->color), 0);
+        lv_obj_set_style_border_color(dt_swatch, lv_color_hex(0x9aa4ad), 0);
+        lv_label_set_text(dt_type, sl->type.length() ? sl->type.c_str() : "Filament");
+
+        String info;
+        if (a.units > 1) info = "AMS " + String(a.activeUnit + 1) + " \xC2\xB7 ";
+        info += "Slot " + String(a.activeSlot + 1);
+        if (sl->remain >= 0) info += "  \xC2\xB7  " + String(sl->remain) + "%";
+        lv_label_set_text(dt_slot, info.c_str());
+    } else {
+        // Klipper / no AMS / no loaded tray: neutral swatch + hint.
+        lv_obj_set_style_bg_color(dt_swatch, lv_color_hex(0x2b3340), 0);
+        lv_obj_set_style_border_color(dt_swatch, lv_color_hex(0x3a424c), 0);
+        lv_label_set_text(dt_type, "—");
+        lv_label_set_text(dt_slot, a.present ? "No active filament" : "No filament data");
+    }
+
     lv_label_set_text(dt_file, s.filename.length() ? s.filename.c_str()
                                                    : (label.length() ? label.c_str() : ""));
-    lv_label_set_text(dt_eta, fmtRemaining(s.remainingSec).c_str());
 }
 
 void setBtnEnabled(lv_obj_t* b, bool en) {
@@ -607,6 +790,29 @@ void refreshSystem() {
         lv_label_set_text(sy_wifi, LV_SYMBOL_WIFI "  offline");
     lv_label_set_text(sy_ip, WifiManager::ip().c_str());
     lv_label_set_text_fmt(sy_bright, "%d%%", (int)cfg.brightness);
+}
+
+void refreshIdle(const PrinterStatus& s, const String& label) {
+    lv_label_set_text(id_printer, label.length() ? label.c_str() : "Printer");
+
+    const char* word;
+    switch (s.state) {
+        case PrintState::COMPLETE: word = "Done";    break;
+        case PrintState::OFFLINE:  word = "Offline"; break;
+        default:                   word = "Ready";   break;  // IDLE
+    }
+    lv_label_set_text(id_state, word);
+    lv_obj_set_style_text_color(id_state, stateColor(s.state), 0);
+
+    // Temperatures (so cooling is visible); hidden when offline — no live data.
+    lv_obj_t* trow = lv_obj_get_parent(id_temps);
+    if (s.state == PrintState::OFFLINE) {
+        lv_obj_add_flag(trow, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(trow, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text_fmt(id_temps, "%d\xC2\xB0 / %d\xC2\xB0",
+                              (int)(s.nozzleTemp + 0.5f), (int)(s.bedTemp + 0.5f));
+    }
 }
 
 void renderAms() {
@@ -684,8 +890,10 @@ void begin() {
     bool hasAms = (cfg.printerType == PrinterType::BAMBU);
     if (hasAms) buildAmsScreen();
     buildControlsScreen();
+    buildIdleScreen();
     buildSetupScreen();
     buildBootScreen();
+    buildUpdateScreen();
 
     int i = 0;
     carousel[i++] = scr_status;
@@ -701,19 +909,38 @@ void begin() {
 
 void setControlHandler(ControlCb cb) { g_ctrl = cb; }
 
+bool isResting(PrintState s) {
+    return s == PrintState::IDLE || s == PrintState::OFFLINE || s == PrintState::COMPLETE;
+}
+
 void update(const PrinterStatus& s, const String& printerLabel) {
-    if (!carActive) {
-        carActive = true;
-        carIdx = 0;
-        lv_scr_load(scr_status);
-        lv_obj_clear_flag(dots, LV_OBJ_FLAG_HIDDEN);
-        updateDots();
-    }
+    static bool started    = false;
+    static bool wasResting = false;
+
+    // Keep every screen's widgets current (cheap; ready whenever shown).
     refreshStatus(s, printerLabel);
     refreshDetails(s, printerLabel);
     if (scr_ams) refreshAms(s.ams);
     refreshControls(s);
     refreshSystem();
+    refreshIdle(s, printerLabel);
+
+    bool resting = isResting(s.state);
+    if (!started) {
+        started    = true;
+        wasResting = resting;
+        if (resting) showIdle();
+        else         enterCarousel();
+        return;
+    }
+
+    // Switch context only on an active<->resting transition, so the user can
+    // freely swipe into the carousel while idle without being yanked back.
+    if (resting != wasResting) {
+        wasResting = resting;
+        if (resting) showIdle();
+        else         enterCarousel();
+    }
 }
 
 void showSetup(const String& ssid, const String& ip) {
@@ -732,6 +959,14 @@ void showBoot(const char* step, uint8_t pct, const char* detail) {
     lv_bar_set_value(boot_bar, pct, LV_ANIM_ON);
     lv_label_set_text(boot_step, step);
     lv_label_set_text(boot_detail, detail ? detail : "");
+}
+
+void showUpdate(uint8_t pct) {
+    carActive = false;
+    if (dots) lv_obj_add_flag(dots, LV_OBJ_FLAG_HIDDEN);
+    if (lv_scr_act() != scr_update) lv_scr_load(scr_update);
+    lv_bar_set_value(upd_bar, pct, LV_ANIM_OFF);
+    lv_label_set_text_fmt(upd_pct, "%d%%", pct);
 }
 
 }  // namespace UI

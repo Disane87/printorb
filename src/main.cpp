@@ -22,12 +22,16 @@
 #include "printer.h"
 #include "klipper_client.h"
 #include "bambu_client.h"
+#include "timekeeper.h"
+#include "ota.h"
 
 static PrinterClient* printer = nullptr;
 static esp_timer_handle_t lvTickTimer = nullptr;
 
 static const uint32_t UI_REFRESH_MS = 500;
 static uint32_t lastUiMs = 0;
+
+static bool screenAsleep = false;
 
 // LVGL needs a millisecond tick fed independently of loop() timing.
 static void lvTick(void*) { lv_tick_inc(1); }
@@ -57,6 +61,60 @@ static void createPrinter() {
         printer = new KlipperClient(host, cfg.moonrakerPort, cfg.moonrakerApiKey);
     }
     printer->begin();
+}
+
+// True while the local time falls inside the configured nightly dim window.
+// Crosses midnight when start > end. Inactive (false) until NTP has synced.
+static bool inDimWindow() {
+    if (!cfg.dimSchedEnabled || cfg.dimStartMin == cfg.dimEndMin) return false;
+    int now = Time::localMinutes();
+    if (now < 0) return false;                 // no clock yet -> no dimming
+    uint16_t a = cfg.dimStartMin, b = cfg.dimEndMin;
+    return (a < b) ? (now >= a && now < b)     // same-day window
+                   : (now >= a || now < b);    // overnight window
+}
+
+// The brightness the screen should show while awake: dimmed inside the schedule
+// window, otherwise the user's normal brightness.
+static uint8_t baseBrightness() {
+    return inDimWindow() ? cfg.dimBrightness : cfg.brightness;
+}
+
+// Wake from sleep: clear the flag, reset the idle timer and swallow the tap.
+static void wakeScreen() {
+    screenAsleep = false;
+    lv_disp_trig_activity(NULL);          // so it doesn't re-sleep at once
+    Display::suppressTouchUntilRelease(); // the tap that woke us triggers nothing
+}
+
+// Single owner of the backlight. Combines three inputs into one effective level:
+//   - manual brightness (cfg.brightness)
+//   - scheduled dimming  (cfg.dim*) -> baseBrightness()
+//   - inactivity auto-off (power-save) -> 0 while asleep
+// Auto-off only runs while the printer is resting AND the toggle is on. WiFi and
+// polling keep running, so a starting print or a touch wakes the screen.
+static void serviceBrightness(const PrinterStatus& s) {
+    static int lastApplied = -1;
+
+    bool sleepEnabled = cfg.screenSleepEnabled && cfg.screenTimeoutSec > 0;
+    if (sleepEnabled && UI::isResting(s.state)) {
+        if (!screenAsleep &&
+            lv_disp_get_inactive_time(NULL) >= (uint32_t)cfg.screenTimeoutSec * 1000) {
+            screenAsleep = true;
+            Log::printf("[Sleep] display off\n");
+        } else if (screenAsleep && Display::touched()) {
+            Log::printf("[Sleep] wake (touch)\n");
+            wakeScreen();
+        }
+    } else if (screenAsleep) {
+        wakeScreen();                     // feature off or print active -> wake
+    }
+
+    uint8_t eff = screenAsleep ? 0 : baseBrightness();
+    if ((int)eff != lastApplied) {
+        lastApplied = eff;
+        Display::setBrightness(eff);
+    }
 }
 
 // Fed to WifiManager during the blocking STA connect so the boot screen stays
@@ -106,6 +164,13 @@ void setup() {
     lv_timer_handler();
     WifiManager::begin(bootPump);
 
+    // Start NTP once we're on the LAN so the dim schedule has a clock to work
+    // against. In AP/setup mode there's no upstream network, so we skip it.
+    if (WifiManager::mode() == WifiManager::Mode::STA) {
+        Time::begin(cfg.timezone);
+        Ota::begin();   // enable `pio ... espota` flashing over WiFi
+    }
+
     // Web portal runs in both AP and STA mode.
     UI::showBoot("Web portal", 85);
     lv_timer_handler();
@@ -126,20 +191,36 @@ void setup() {
 }
 
 void loop() {
-    lv_timer_handler();
     WifiManager::loop();
+    Ota::loop();
+
+    // A browser firmware upload runs in the async server task; it only writes a
+    // progress percentage. Render the on-screen update screen here, in the LVGL
+    // thread, while the upload streams in.
+    int otaPct = WebPortal::otaProgress();
+    if (otaPct >= 0) {
+        UI::showUpdate((uint8_t)otaPct);
+        lv_timer_handler();
+        delay(2);
+        return;
+    }
 
     if (printer) {
         printer->loop();
+        const PrinterStatus& s = printer->status();
+
+        // Run before lv_timer_handler so a wake-up tap is swallowed before LVGL
+        // processes it as a button press or swipe.
+        serviceBrightness(s);
 
         uint32_t now = millis();
         if (now - lastUiMs >= UI_REFRESH_MS) {
             lastUiMs = now;
-            const PrinterStatus& s = printer->status();
             UI::update(s, printerLabel());
             WebPortal::updateStatus(s, printerLabel());
         }
     }
 
+    lv_timer_handler();
     delay(2);  // yield to WiFi / async stacks
 }

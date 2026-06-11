@@ -3,10 +3,12 @@
 #include "config.h"
 #include "wifi_manager.h"
 #include "logbuf.h"
+#include "timekeeper.h"
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <Update.h>
 
 namespace {
     AsyncWebServer server(80);
@@ -15,6 +17,17 @@ namespace {
     // Latest status snapshot for /api/status.
     PrinterStatus g_status;
     String        g_label = "";
+
+    // Browser-OTA progress (0..100), -1 = idle. Set by the async upload handler,
+    // read by the main loop to drive the on-screen update screen.
+    volatile int  g_otaPct = -1;
+
+    // Firmware updates require the admin password (HTTP Basic, user "admin").
+    // No password configured => always denied, so OTA is off until one is set.
+    bool otaAuthed(AsyncWebServerRequest* req) {
+        return cfg.adminPassword.length() &&
+               req->authenticate("admin", cfg.adminPassword.c_str());
+    }
 
     String buildConfigJson() {
         JsonDocument d;
@@ -28,7 +41,15 @@ namespace {
         d["moonrakerApiKey"] = cfg.moonrakerApiKey;
         d["bambuSerial"]     = cfg.bambuSerial;
         d["bambuAccessCode"] = cfg.bambuAccessCode;
+        d["adminPwSet"]      = cfg.adminPassword.length() > 0;  // password write-only
         d["brightness"]      = cfg.brightness;
+        d["screenTimeoutSec"] = cfg.screenTimeoutSec;
+        d["screenSleepEnabled"] = cfg.screenSleepEnabled;
+        d["timezone"]        = cfg.timezone;
+        d["dimSchedEnabled"] = cfg.dimSchedEnabled;
+        d["dimStartMin"]     = cfg.dimStartMin;
+        d["dimEndMin"]       = cfg.dimEndMin;
+        d["dimBrightness"]   = cfg.dimBrightness;
         String out; serializeJson(d, out); return out;
     }
 
@@ -45,6 +66,117 @@ namespace {
         d["layer"]        = g_status.currentLayer;
         d["totalLayer"]   = g_status.totalLayer;
         d["file"]         = g_status.filename;
+
+        // AMS (Bambu). Only meaningfully populated when present; the web UI's
+        // AMS tab shows a placeholder otherwise. Max 4 units x 4 slots is tiny.
+        JsonObject ams = d["ams"].to<JsonObject>();
+        const AmsInfo& a = g_status.ams;
+        ams["present"] = a.present;
+        if (a.present) {
+            ams["units"]      = a.units;
+            ams["activeUnit"] = a.activeUnit;   // 0-based unit array index
+            ams["activeSlot"] = a.activeSlot;
+            JsonArray units = ams["unit"].to<JsonArray>();
+            for (int u = 0; u < 4; u++) {
+                const AmsUnit& U = a.unit[u];
+                if (!U.present) continue;
+                JsonObject uo = units.add<JsonObject>();
+                uo["index"] = u;                // for active-slot matching in JS
+                uo["count"] = U.count;
+                if (U.humidity >= 0) uo["humidity"] = U.humidity;
+                JsonArray slots = uo["slots"].to<JsonArray>();
+                for (int i = 0; i < 4; i++) {
+                    const AmsSlot& sl = U.slot[i];
+                    JsonObject so = slots.add<JsonObject>();
+                    so["used"] = sl.present;
+                    if (sl.present) {
+                        so["type"] = sl.type;
+                        char col[8];
+                        snprintf(col, sizeof(col), "#%06X",
+                                 (unsigned)(sl.color & 0xFFFFFF));
+                        so["color"] = col;
+                        if (sl.remain >= 0) so["remain"] = sl.remain;
+                    }
+                }
+            }
+        }
+        String out; serializeJson(d, out); return out;
+    }
+
+    const char* resetReasonStr() {
+        switch (esp_reset_reason()) {
+            case ESP_RST_POWERON:  return "power-on";
+            case ESP_RST_SW:       return "software";
+            case ESP_RST_PANIC:    return "panic";
+            case ESP_RST_INT_WDT:  return "int-watchdog";
+            case ESP_RST_TASK_WDT: return "task-watchdog";
+            case ESP_RST_WDT:      return "watchdog";
+            case ESP_RST_BROWNOUT: return "brownout";
+            case ESP_RST_DEEPSLEEP:return "deep-sleep";
+            case ESP_RST_EXT:      return "external";
+            default:               return "unknown";
+        }
+    }
+
+    // Diagnostics for the web "Info" tab: network, memory, flash, chip, build,
+    // time-sync and the live printer connection. Everything useful for debugging.
+    String buildSysinfoJson() {
+        JsonDocument d;
+
+        // Firmware / build
+        d["firmware"]   = __DATE__ " " __TIME__;
+        d["sdk"]        = ESP.getSdkVersion();
+        d["resetReason"]= resetReasonStr();
+        d["uptimeSec"]  = (uint32_t)(millis() / 1000);
+
+        // Network
+        JsonObject net = d["net"].to<JsonObject>();
+        net["mode"]     = (WifiManager::mode() == WifiManager::Mode::AP) ? "AP" : "STA";
+        net["ip"]       = WifiManager::ip();
+        net["hostname"] = cfg.hostname;
+        net["mdns"]     = cfg.hostname + ".local";
+        net["mac"]      = WiFi.macAddress();
+        net["ssid"]     = WiFi.SSID();
+        net["rssi"]     = WiFi.RSSI();
+        net["channel"]  = WiFi.channel();
+
+        // Memory (heap + PSRAM)
+        JsonObject mem = d["mem"].to<JsonObject>();
+        mem["heapFree"]   = ESP.getFreeHeap();
+        mem["heapMin"]    = ESP.getMinFreeHeap();
+        mem["heapSize"]   = ESP.getHeapSize();
+        mem["heapMaxBlk"] = ESP.getMaxAllocHeap();
+        mem["psramFree"]  = ESP.getFreePsram();
+        mem["psramSize"]  = ESP.getPsramSize();
+
+        // Flash / sketch
+        JsonObject fl = d["flash"].to<JsonObject>();
+        fl["flashSize"]  = ESP.getFlashChipSize();
+        fl["sketchSize"] = ESP.getSketchSize();
+        fl["sketchFree"] = ESP.getFreeSketchSpace();
+
+        // Chip
+        JsonObject chip = d["chip"].to<JsonObject>();
+        chip["model"]   = ESP.getChipModel();
+        chip["rev"]     = ESP.getChipRevision();
+        chip["cores"]   = ESP.getChipCores();
+        chip["cpuMhz"]  = ESP.getCpuFreqMHz();
+
+        // Time sync (NTP)
+        JsonObject tm = d["time"].to<JsonObject>();
+        tm["synced"] = Time::synced();
+        int lm = Time::localMinutes();
+        if (lm >= 0) {
+            char hhmm[6];
+            snprintf(hhmm, sizeof(hhmm), "%02d:%02d", lm / 60, lm % 60);
+            tm["local"] = hhmm;
+        }
+
+        // Printer link
+        JsonObject pr = d["printer"].to<JsonObject>();
+        pr["type"]  = Config::printerTypeStr(cfg.printerType);
+        pr["state"] = PrinterStatus::stateLabel(g_status.state);
+
         String out; serializeJson(d, out); return out;
     }
 
@@ -78,7 +210,19 @@ namespace {
         if (doc["moonrakerApiKey"].is<const char*>()) cfg.moonrakerApiKey = String((const char*)doc["moonrakerApiKey"]);
         if (doc["bambuSerial"].is<const char*>())     cfg.bambuSerial     = String((const char*)doc["bambuSerial"]);
         if (doc["bambuAccessCode"].is<const char*>()) cfg.bambuAccessCode = String((const char*)doc["bambuAccessCode"]);
+        // Only overwrite the admin password when a non-empty value is supplied.
+        if (doc["adminPassword"].is<const char*>()) {
+            String p = String((const char*)doc["adminPassword"]);
+            if (p.length()) cfg.adminPassword = p;
+        }
         if (doc["brightness"].is<int>())              cfg.brightness      = constrain((int)doc["brightness"], 10, 100);
+        if (doc["screenTimeoutSec"].is<int>())        cfg.screenTimeoutSec = constrain((int)doc["screenTimeoutSec"], 0, 3600);
+        if (doc["screenSleepEnabled"].is<bool>())     cfg.screenSleepEnabled = doc["screenSleepEnabled"];
+        if (doc["timezone"].is<const char*>())        cfg.timezone        = String((const char*)doc["timezone"]);
+        if (doc["dimSchedEnabled"].is<bool>())        cfg.dimSchedEnabled = doc["dimSchedEnabled"];
+        if (doc["dimStartMin"].is<int>())             cfg.dimStartMin     = constrain((int)doc["dimStartMin"], 0, 1439);
+        if (doc["dimEndMin"].is<int>())               cfg.dimEndMin       = constrain((int)doc["dimEndMin"], 0, 1439);
+        if (doc["dimBrightness"].is<int>())           cfg.dimBrightness   = constrain((int)doc["dimBrightness"], 0, 100);
 
         Config::save();
         if (g_onSaved) g_onSaved();
@@ -108,6 +252,10 @@ void begin(ConfigSavedCb onSaved) {
 
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* req) {
         req->send(200, "application/json", buildStatusJson());
+    });
+
+    server.on("/api/sysinfo", HTTP_GET, [](AsyncWebServerRequest* req) {
+        req->send(200, "application/json", buildSysinfoJson());
     });
 
     // Live serial/debug log as plain text (the device's own scrollback buffer).
@@ -186,6 +334,46 @@ void begin(ConfigSavedCb onSaved) {
         req->onDisconnect([]() { delay(300); ESP.restart(); });
     });
 
+    // Firmware update (OTA over HTTP). The .bin is POSTed as the RAW request body
+    // (application/octet-stream), not multipart: that keeps memory low so a large
+    // upload doesn't reset the connection while the Bambu MQTT TLS buffer is
+    // allocated. Streamed straight into the OTA partition. Requires the admin
+    // password (HTTP Basic, user "admin"); reboots on success.
+    server.on("/api/update", HTTP_POST,
+        [](AsyncWebServerRequest* req) {
+            if (!otaAuthed(req)) { g_otaPct = -1; return req->requestAuthentication(); }
+            bool ok = !Update.hasError();
+            if (!ok) g_otaPct = -1;
+            AsyncWebServerResponse* res = req->beginResponse(
+                ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
+            res->addHeader("Connection", "close");
+            req->send(res);
+            if (ok) req->onDisconnect([]() { delay(300); ESP.restart(); });
+        },
+        nullptr,
+        [](AsyncWebServerRequest* req, uint8_t* data, size_t len,
+           size_t index, size_t total) {
+            if (!otaAuthed(req)) return;            // unauthenticated -> ignore body
+            if (index == 0) {
+                Log::printf("[Update] start: %u bytes\n", (unsigned)total);
+                g_otaPct = 0;
+                if (!Update.begin(total ? total : UPDATE_SIZE_UNKNOWN))
+                    Log::printf("[Update] begin failed: %s\n", Update.errorString());
+            }
+            if (Update.isRunning()) {
+                if (Update.write(data, len) != len)
+                    Log::printf("[Update] write failed: %s\n", Update.errorString());
+                g_otaPct = total ? (int)((uint64_t)(index + len) * 100 / total) : 0;
+                if (index + len >= total) {
+                    g_otaPct = 100;
+                    if (Update.end(true))
+                        Log::printf("[Update] ok, %u bytes\n", (unsigned)(index + len));
+                    else
+                        Log::printf("[Update] end failed: %s\n", Update.errorString());
+                }
+            }
+        });
+
     // Captive portal: in AP mode, redirect every unknown request (including the
     // OS connectivity probes like /generate_204 and /hotspot-detect.html) to the
     // config page so the "sign in to network" sheet pops up. In STA mode just
@@ -205,5 +393,7 @@ void updateStatus(const PrinterStatus& s, const String& label) {
     g_status = s;
     g_label  = label;
 }
+
+int otaProgress() { return g_otaPct; }
 
 }  // namespace WebPortal

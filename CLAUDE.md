@@ -51,7 +51,9 @@ pio device monitor      # serial @ 115200
 | `src/ui.{h,cpp}` | Boot/setup screens + swipe carousel (status/details/system/ams/controls) |
 | `src/orb_icons.{h,c}` | Embedded MDI icon font + `ORB_ICON_*` UTF-8 macros |
 | `src/wifi_manager.{h,cpp}` | STA + captive AP, DNS, mDNS, `resolveHost()` |
-| `src/web_portal.{h,cpp}` | Async HTTP server: config/status/scan/discover/log |
+| `src/timekeeper.{h,cpp}` | SNTP local time (`Time::localMinutes()`) for scheduled dimming |
+| `src/ota.{h,cpp}` | ArduinoOTA (`espota`) WiFi flashing; web upload lives in `web_portal` |
+| `src/web_portal.{h,cpp}` | Async HTTP server: config/status/scan/discover/log/update |
 | `src/web_index.h` | Embedded HTML/CSS/JS config UI (PROGMEM) |
 | `src/logbuf.{h,cpp}` | Log ring buffer behind `Log::printf` (served at `/api/log`) |
 | `include/lgfx_device.h` | **All hardware pins** + LovyanGFX panel/touch config |
@@ -108,7 +110,22 @@ printer type (the AMS screen only exists for Bambu).
 | POST | `/api/restart` | reboot |
 | GET | `/api/scan` | async WiFi scan (poll until `networks` returned) |
 | GET | `/api/discover` | mDNS discovery of Klipper/Bambu printers (STA only) |
+| GET | `/api/sysinfo` | diagnostics JSON (IP, memory, flash, chip, uptime, NTP) |
 | GET | `/api/log` | live device log (plain text, from `Log::dump()`) |
+| POST | `/api/update` | firmware upload (raw `.bin` body, HTTP Basic auth) → reboot |
+
+## Flashing over WiFi (OTA)
+
+OTA requires an **Update / OTA password** set in the web UI (Settings → Security).
+With no password, OTA is **disabled** (secure default): `Ota::begin()` returns
+early and `/api/update` always 401s. The first flash is still USB.
+- **Dev push:** `pio run -e esp32-s3-touch-lcd-128-ota -t upload` (ArduinoOTA /
+  `espota`; set `--auth` in `platformio.ini` to the device password). Uses a
+  device→host reverse TCP connection — a host firewall or crossing subnets breaks
+  it; use the browser path instead.
+- **Browser:** Update tab → uploads the raw `.bin` to `POST /api/update` with
+  HTTP Basic auth (user `admin`, the OTA password). Raw body (not multipart) keeps
+  memory low so large uploads don't reset while the Bambu MQTT buffer is live.
 
 ## First-time setup flow
 

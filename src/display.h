@@ -11,4 +11,13 @@ namespace Display {
     void begin();
     /** Set backlight brightness, 0..100 (%). */
     void setBrightness(uint8_t pct);
+
+    /** Raw touch state, bypassing the input gate (used to wake from sleep). */
+    bool touched();
+
+    /**
+     * Swallow the ongoing touch: the input device reports "released" until the
+     * finger lifts, so the tap that wakes the screen triggers no button/gesture.
+     */
+    void suppressTouchUntilRelease();
 }

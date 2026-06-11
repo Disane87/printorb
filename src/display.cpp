@@ -26,9 +26,21 @@ static void disp_flush(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* co
     lv_disp_flush_ready(drv);
 }
 
+// When set, the indev reports "released" until the finger lifts. Lets the sleep
+// manager swallow the wake-up tap so it doesn't trigger a button or swipe.
+static volatile bool s_suppress = false;
+
 static void touch_read(lv_indev_drv_t* /*drv*/, lv_indev_data_t* data) {
     int32_t x, y;
-    if (lcd.getTouch(&x, &y)) {
+    bool down = lcd.getTouch(&x, &y);
+
+    if (s_suppress) {
+        if (!down) s_suppress = false;   // finger lifted -> resume normal input
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
+
+    if (down) {
         data->state   = LV_INDEV_STATE_PRESSED;
         data->point.x = x;
         data->point.y = y;
@@ -73,5 +85,12 @@ void setBrightness(uint8_t pct) {
     pct = pct > 100 ? 100 : pct;
     lcd.setBrightness(map(pct, 0, 100, 0, 255));
 }
+
+bool touched() {
+    int32_t x, y;
+    return lcd.getTouch(&x, &y);
+}
+
+void suppressTouchUntilRelease() { s_suppress = true; }
 
 }  // namespace Display

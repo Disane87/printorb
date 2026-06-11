@@ -28,7 +28,15 @@ void load() {
     cfg.moonrakerApiKey = prefs.getString("mkey", "");
     cfg.bambuSerial     = prefs.getString("bserial", "");
     cfg.bambuAccessCode = prefs.getString("bcode", "");
+    cfg.adminPassword   = prefs.getString("adminPw", "");
     cfg.brightness      = prefs.getUChar("bright", 100);
+    cfg.screenTimeoutSec = prefs.getUShort("sleep", 120);
+    cfg.screenSleepEnabled = prefs.getBool("slpOn", true);
+    cfg.timezone        = prefs.getString("tz", "");
+    cfg.dimSchedEnabled = prefs.getBool("dimOn", false);
+    cfg.dimStartMin     = prefs.getUShort("dimStart", 22 * 60);
+    cfg.dimEndMin       = prefs.getUShort("dimEnd", 7 * 60);
+    cfg.dimBrightness   = prefs.getUChar("dimBri", 20);
     prefs.end();
 }
 
@@ -44,7 +52,15 @@ void save() {
     prefs.putString("mkey", cfg.moonrakerApiKey);
     prefs.putString("bserial", cfg.bambuSerial);
     prefs.putString("bcode", cfg.bambuAccessCode);
+    prefs.putString("adminPw", cfg.adminPassword);
     prefs.putUChar("bright", cfg.brightness);
+    prefs.putUShort("sleep", cfg.screenTimeoutSec);
+    prefs.putBool("slpOn", cfg.screenSleepEnabled);
+    prefs.putString("tz", cfg.timezone);
+    prefs.putBool("dimOn", cfg.dimSchedEnabled);
+    prefs.putUShort("dimStart", cfg.dimStartMin);
+    prefs.putUShort("dimEnd", cfg.dimEndMin);
+    prefs.putUChar("dimBri", cfg.dimBrightness);
     prefs.end();
 }
 

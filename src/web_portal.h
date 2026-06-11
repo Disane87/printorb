@@ -15,4 +15,11 @@ namespace WebPortal {
 
     /** Push the latest status so /api/status can serve it. */
     void updateStatus(const PrinterStatus& s, const String& label);
+
+    /**
+     * OTA upload progress for the on-screen update screen. Returns -1 when no
+     * browser firmware upload is in flight, otherwise 0..100. Written from the
+     * async server task, read from the main loop (single int, lock-free).
+     */
+    int otaProgress();
 }

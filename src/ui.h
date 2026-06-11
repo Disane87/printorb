@@ -21,6 +21,12 @@ namespace UI {
     /** Refresh all live carousel screens from a PrinterStatus (no screen switch). */
     void update(const PrinterStatus& s, const String& printerLabel);
 
+    /**
+     * "Resting" states show the idle screen and allow the display to sleep.
+     * PAUSED and ERROR count as active so a paused job / error stays visible.
+     */
+    bool isResting(PrintState s);
+
     /** Show a fullscreen setup hint (AP mode / not configured). */
     void showSetup(const String& ssid, const String& ip);
 
@@ -29,4 +35,10 @@ namespace UI {
      * step. `pct` is 0..100; `detail` is an optional second line (e.g. SSID).
      */
     void showBoot(const char* step, uint8_t pct, const char* detail = "");
+
+    /**
+     * Fullscreen firmware-update screen (OTA, both ArduinoOTA and web upload).
+     * `pct` is 0..100. Must be called from the main/LVGL thread only.
+     */
+    void showUpdate(uint8_t pct);
 }
