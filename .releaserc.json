@@ -17,6 +17,7 @@
           },
           {
             "path": ".pio/build/esp32-s3-touch-lcd-128/firmware.bin",
+            "name": "printorb-app.bin",
             "label": "printorb-app.bin"
           }
         ]

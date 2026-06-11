@@ -23,8 +23,10 @@ static bool     _began        = false;
 static uint32_t _nextCheckMs  = 0;
 static bool     _available    = false;
 static String   _latest       = "";
-static bool     _pendingApply = false;
-static bool     _applying     = false;
+// volatile: written by requestApply() from the async web-server task, read by
+// loop() on the main thread — keep the optimizer from caching the load.
+static volatile bool _pendingApply = false;
+static volatile bool _applying     = false;
 
 // Parse the leading MAJOR.MINOR.PATCH of a version string. Stops at the first
 // non-digit/non-dot (so "1.4.2-rc1" -> {1,4,2}). Returns false if no digits.
@@ -109,8 +111,11 @@ static void apply() {
     httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);  // github -> CDN
     httpUpdate.onProgress(onProgress);
 
+    // Pin to the exact version we detected (not "latest"): the flashed image then
+    // matches what updateAvailable() advertised, even if a newer release lands
+    // between the check and the apply. semantic-release tags are vX.Y.Z.
     String url = String("https://github.com/") + GH_OWNER + "/" + GH_REPO +
-                 "/releases/latest/download/printorb-app.bin";
+                 "/releases/download/v" + _latest + "/printorb-app.bin";
     t_httpUpdate_return ret = httpUpdate.update(client, url);
 
     // On success the device reboots inside update(); reaching here = failure.
@@ -140,7 +145,7 @@ void loop() {
 
 bool updateAvailable()        { return _available && cfg.autoUpdateCheck; }
 const String& latestVersion() { return _latest; }
-void requestApply()           { if (_available) _pendingApply = true; }
+void requestApply()           { if (_available && cfg.autoUpdateCheck) _pendingApply = true; }
 bool isApplying()             { return _applying || _pendingApply; }
 
 }  // namespace Updater
