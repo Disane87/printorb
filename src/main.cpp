@@ -68,23 +68,55 @@ static void onControl(UI::Ctrl c) {
     else if (c == UI::CTRL_DRY_STOP)   doDry(false);
 }
 
-static String printerLabel() {
-    String name = cfg.printerName.length() ? cfg.printerName : String("Printer");
-    return name;
-}
-
+// Build the client for the *active* printer. Only one connection exists at a
+// time: a Bambu client alone needs a 48 KB MQTT buffer, so polling every
+// configured printer in parallel would not fit in RAM. Switching printers tears
+// the old client down and builds a new one (see switchPrinter).
 static void createPrinter() {
     if (printer) { delete printer; printer = nullptr; }
 
-    // Accept an IP or a hostname (.local via mDNS) for the printer address.
-    String host = WifiManager::resolveHost(cfg.printerIp);
+    const PrinterCfg& p = cfg.printer();
+    if (!p.isConfigured()) {
+        Log::printf("[PrintOrb] active printer slot %u is incomplete\n",
+                    (unsigned)cfg.activePrinter);
+        return;
+    }
 
-    if (cfg.printerType == PrinterType::BAMBU) {
-        printer = new BambuClient(host, cfg.bambuSerial, cfg.bambuAccessCode);
+    // Accept an IP or a hostname (.local via mDNS) for the printer address.
+    String host = WifiManager::resolveHost(p.ip);
+
+    if (p.type == PrinterType::BAMBU) {
+        printer = new BambuClient(host, p.bambuSerial, p.bambuAccessCode);
     } else {
-        printer = new KlipperClient(host, cfg.moonrakerPort, cfg.moonrakerApiKey);
+        printer = new KlipperClient(host, p.moonrakerPort, p.moonrakerApiKey);
     }
     printer->begin();
+    Log::printf("[PrintOrb] printer %u/%u: %s @ %s\n",
+                (unsigned)(cfg.activePrinter + 1), (unsigned)cfg.printerCount,
+                p.label().c_str(), host.c_str());
+}
+
+// Printer switch requested but not yet applied; -1 = none. Both callers run
+// outside the main loop — the touch handler inside lv_timer_handler(), the web
+// endpoint inside the AsyncTCP task — while applying a switch resolves mDNS
+// (blocking for up to ~2 s), allocates the 48 KB MQTT buffer and touches LVGL.
+// So the request is only recorded here and carried out from loop().
+static volatile int pendingPrinter = -1;
+
+static void switchPrinter(uint8_t idx) {
+    if (idx >= cfg.printerCount || idx == cfg.activePrinter) return;
+    pendingPrinter = (int)idx;
+}
+
+// Main-loop half of switchPrinter().
+static void servicePrinterSwitch() {
+    if (pendingPrinter < 0) return;
+    uint8_t idx = (uint8_t)pendingPrinter;
+    pendingPrinter = -1;
+    if (!Config::setActivePrinter(idx)) return;
+    UI::refreshPrinters();
+    UI::toast(cfg.printer().label().c_str());
+    createPrinter();
 }
 
 // True while the local time falls inside the configured nightly dim window.
@@ -167,6 +199,7 @@ void setup() {
     Config::load();   // before UI::begin so the carousel knows the printer type (AMS screen)
     UI::begin();      // boot screen at 0 %
     UI::setControlHandler(onControl);
+    UI::setPrinterSwitchHandler(switchPrinter);
 
     // 1 ms LVGL tick (needed for animations during the boot sequence)
     const esp_timer_create_args_t targs = {
@@ -201,13 +234,14 @@ void setup() {
     lv_timer_handler();
     WebPortal::begin(nullptr);
     WebPortal::setDryHandler(doDry);
+    WebPortal::setPrinterSwitchHandler(switchPrinter);
 
     if (WifiManager::mode() == WifiManager::Mode::AP) {
         UI::showSetup(WifiManager::apSsid(), WifiManager::ip());
     } else if (!cfg.isConfigured()) {
         UI::showSetup("connected", WifiManager::ip());
     } else {
-        UI::showBoot("Connecting to printer", 95, printerLabel().c_str());
+        UI::showBoot("Connecting to printer", 95, cfg.printer().label().c_str());
         lv_timer_handler();
         createPrinter();
     }
@@ -232,20 +266,21 @@ void loop() {
         return;
     }
 
-    if (printer) {
-        printer->loop();
-        const PrinterStatus& s = printer->status();
+    servicePrinterSwitch();
+    if (printer) printer->loop();
 
-        // Run before lv_timer_handler so a wake-up tap is swallowed before LVGL
-        // processes it as a button press or swipe.
-        serviceBrightness(s);
+    static const PrinterStatus offline;   // shown while no client is connected
+    const PrinterStatus& s = printer ? printer->status() : offline;
 
-        uint32_t now = millis();
-        if (now - lastUiMs >= UI_REFRESH_MS) {
-            lastUiMs = now;
-            UI::update(s, printerLabel());
-            WebPortal::updateStatus(s, printerLabel());
-        }
+    // Run before lv_timer_handler so a wake-up tap is swallowed before LVGL
+    // processes it as a button press or swipe.
+    serviceBrightness(s);
+
+    uint32_t now = millis();
+    if (now - lastUiMs >= UI_REFRESH_MS) {
+        lastUiMs = now;
+        UI::update(s);
+        WebPortal::updateStatus(s, cfg.printer().label());
     }
 
     lv_timer_handler();

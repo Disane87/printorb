@@ -36,16 +36,30 @@ Glad you asked! Here's the good stuff:
 - 🧩 **Fully standalone — no Home Assistant required**: the orb connects **directly**
   to your printer over your LAN. No middleware hub, no MQTT broker, no cloud account,
   no companion server to keep running.
+- 🖨️ **Up to four printers, one orb**: configure a whole workshop — mix Klipper
+  and Bambu freely — and switch which one the orb watches from the **Printers**
+  screen or the web portal. Switching is instant; **no reboot**.
 - 🔀 **Two backends, switchable at runtime**: pick **Klipper** (HTTP polling of the
   Moonraker API) or **Bambu Lab** (local MQTT over TLS, port 8883, LAN mode) — no
   reflash to swap.
-- 👆 **Touch carousel** — swipe left/right between five screens:
-  1. 📊 **Status** – progress ring, temps, time, layers (with crisp MDI icons)
-  2. 📄 **Details** – state, file, ETA (minimal & airy)
-  3. ⚙️ **System** – WiFi/RSSI, IP, brightness (just tap −/+)
-  4. 🧵 **Filament (Bambu/AMS)** – colored slot tiles, active slot, humidity;
+- 👆 **Touch carousel** — swipe left/right (it wraps around) between:
+  1. 📊 **Status** – progress ring, %, state, remaining time **and the wall-clock
+     finish time**, plus nozzle/bed temps (with crisp MDI icons)
+  2. 🧾 **Job** – filament colour swatch, type, AMS slot, layer, ETA, file
+  3. 🧵 **Filament (Bambu/AMS)** – colored slot tiles, active slot, humidity;
      **swipe up/down to switch AMS units** (with a vertical dot indicator)
-  5. 🎛️ **Control** – Pause / Resume / **hold-to-Stop**
+  4. 🎛️ **Control** – one primary button that follows the job (Pause ↔ Resume)
+     plus **hold-to-Stop**
+  5. 🖨️ **Printers** – tap to switch the displayed printer (only with 2+ configured)
+  6. ⚙️ **System** – WiFi/RSSI, IP, brightness (tap −/+), version, update, reboot;
+     **scrolls vertically** so nothing is cut off by the round bezel
+- ⏱️ **Hold-to-confirm you can see**: every destructive action (Stop, Reboot,
+  Update, AMS drying) fills a bar across the button while you hold it — release
+  early to abort. Swipes that pass over a button no longer trigger it.
+- 💬 **Action feedback**: a small toast confirms taps like *Pausing…* or a printer
+  switch, so a control press is never silent.
+- 🕰️ **Desk clock when idle**: once NTP has synced, the resting screen shows the
+  time next to the printer state instead of an empty page.
 - 🌈 **Full Bambu AMS view**: per-slot filament type, color and remaining %, active
   tray highlight, humidity, and multiple AMS units
 - 🌐 **Web portal** (baked into flash): live status, all settings, and a **live
@@ -61,8 +75,9 @@ Glad you asked! Here's the good stuff:
   browser Update tab — first flash is USB, after that you're wireless
 
 > [!NOTE]
-> The AMS screen only appears when the printer type is **Bambu** — the carousel
-> adapts itself to your backend at boot.
+> The carousel adapts itself: the **AMS** page only exists while a **Bambu** is
+> the active printer, and the **Printers** page only appears once you have
+> configured more than one.
 
 # 🛠️ Hardware
 
@@ -139,12 +154,20 @@ Ready to roll? Here's the whole flow:
 3. In the **Settings** tab:
    - 📶 **Scan** for your WiFi, pick the network, enter the password
    - 🏷️ Optionally set a **hostname** (default `printorb` → `printorb.local`)
-   - 🖨️ Choose your printer type:
-     - **Klipper:** IP/hostname, Moonraker port (default `7125`), API key optional
-     - **Bambu Lab:** IP/hostname, **serial number**, **LAN access code**
-   - 🔍 Or use **Discover (mDNS)** to find a Klipper/Bambu printer on your LAN
-   - 💾 Save → the device reboots and connects.
-4. After that the UI lives at `http://<device-ip>/` or `http://printorb.local/`. 🎉
+   - 💾 Save → the device reboots onto your network.
+4. In the **Printers** tab, add up to **four** printers (`+ Add printer`):
+   - **Klipper:** IP/hostname, Moonraker port (default `7125`), API key optional
+   - **Bambu Lab:** IP/hostname, **serial number**, **LAN access code**
+   - 🔍 Or hit **Find** to discover Klipper/Bambu printers on your LAN via mDNS
+     and add one with a click
+   - 💾 Save → the device reboots and connects to the selected printer.
+5. After that the UI lives at `http://<device-ip>/` or `http://printorb.local/`. 🎉
+
+> [!TIP]
+> With more than one printer configured, the **Status** tab grows a row of chips
+> to switch printers on the fly, and the orb gets a matching **Printers** screen.
+> Only the selected printer is connected at a time — a single Bambu MQTT client
+> already reserves a 48 KB buffer, so polling four in parallel would not fit in RAM.
 
 ## Bambu Lab — prerequisites
 
@@ -166,9 +189,10 @@ printorb/
 │  └─ lgfx_device.h        LovyanGFX panel/touch definition (PINS HERE)
 └─ src/
    ├─ main.cpp             Setup/loop, boot sequence, wiring
-   ├─ config.{h,cpp}       Settings + NVS persistence
+   ├─ config.{h,cpp}       Settings + printer list + NVS persistence
    ├─ display.{h,cpp}      LVGL bring-up (flush + touch)
-   ├─ ui.{h,cpp}           LVGL screens: boot, setup, and the touch carousel
+   ├─ ui.{h,cpp}           LVGL screens: boot, setup, idle, and the touch carousel
+   ├─ theme.h              Design tokens (colours, metrics) for every screen
    ├─ orb_icons.{h,c}      Embedded Material Design icon font (nozzle/bed/…)
    ├─ printer.h            Shared status model (+ AMS) + client interface
    ├─ klipper_client.{h,cpp}  Moonraker HTTP client (+ pause/resume/stop)
@@ -200,6 +224,7 @@ printorb/
 | GET    | `/api/sysinfo` | Diagnostics (IP, memory, flash, chip, uptime, NTP) |
 | GET    | `/api/log`     | Live device log (plain text)                 |
 | POST   | `/api/update`  | Firmware upload (raw `.bin`, HTTP Basic auth) → reboot |
+| POST   | `/api/printer/select` | Switch the displayed printer (`?index=N`, **no reboot**) |
 
 # 📡 Flashing Over WiFi (OTA)
 

@@ -14,8 +14,9 @@
 
 namespace {
     AsyncWebServer server(80);
-    WebPortal::ConfigSavedCb g_onSaved = nullptr;
-    WebPortal::DryHandler    g_onDry   = nullptr;
+    WebPortal::ConfigSavedCb        g_onSaved  = nullptr;
+    WebPortal::DryHandler           g_onDry    = nullptr;
+    WebPortal::PrinterSwitchHandler g_onSwitch = nullptr;
 
     // Latest status snapshot for /api/status.
     PrinterStatus g_status;
@@ -37,13 +38,21 @@ namespace {
         d["wifiSsid"]        = cfg.wifiSsid;
         // wifiPass intentionally omitted (write-only).
         d["hostname"]        = cfg.hostname;
-        d["printerType"]     = Config::printerTypeStr(cfg.printerType);
-        d["printerName"]     = cfg.printerName;
-        d["printerIp"]       = cfg.printerIp;
-        d["moonrakerPort"]   = cfg.moonrakerPort;
-        d["moonrakerApiKey"] = cfg.moonrakerApiKey;
-        d["bambuSerial"]     = cfg.bambuSerial;
-        d["bambuAccessCode"] = cfg.bambuAccessCode;
+        d["maxPrinters"]     = ORB_MAX_PRINTERS;
+        d["activePrinter"]   = cfg.activePrinter;
+        JsonArray ps = d["printers"].to<JsonArray>();
+        for (uint8_t i = 0; i < cfg.printerCount; i++) {
+            const PrinterCfg& p = cfg.printers[i];
+            JsonObject o = ps.add<JsonObject>();
+            o["type"]            = Config::printerTypeStr(p.type);
+            o["name"]            = p.name;
+            o["ip"]              = p.ip;
+            o["moonrakerPort"]   = p.moonrakerPort;
+            o["moonrakerApiKey"] = p.moonrakerApiKey;
+            o["bambuSerial"]     = p.bambuSerial;
+            // Access codes stay write-only: report only whether one is stored.
+            o["bambuCodeSet"]    = p.bambuAccessCode.length() > 0;
+        }
         d["adminPwSet"]      = cfg.adminPassword.length() > 0;  // password write-only
         d["brightness"]      = cfg.brightness;
         d["screenTimeoutSec"] = cfg.screenTimeoutSec;
@@ -61,6 +70,7 @@ namespace {
         JsonDocument d;
         d["state"]        = PrinterStatus::stateLabel(g_status.state);
         d["printer"]      = g_label;
+        d["activePrinter"] = cfg.activePrinter;
         d["progress"]     = g_status.progress;
         d["nozzle"]       = g_status.nozzleTemp;
         d["nozzleTarget"] = g_status.nozzleTarget;
@@ -190,8 +200,11 @@ namespace {
 
         // Printer link
         JsonObject pr = d["printer"].to<JsonObject>();
-        pr["type"]  = Config::printerTypeStr(cfg.printerType);
-        pr["state"] = PrinterStatus::stateLabel(g_status.state);
+        pr["type"]   = Config::printerTypeStr(cfg.printer().type);
+        pr["name"]   = cfg.printer().label();
+        pr["index"]  = cfg.activePrinter;
+        pr["count"]  = cfg.printerCount;
+        pr["state"]  = PrinterStatus::stateLabel(g_status.state);
 
         String out; serializeJson(d, out); return out;
     }
@@ -218,14 +231,46 @@ namespace {
             String p = String((const char*)doc["wifiPass"]);
             if (p.length()) cfg.wifiPass = p;
         }
-        if (doc["printerType"].is<const char*>())
-            cfg.printerType = Config::printerTypeFromStr(String((const char*)doc["printerType"]));
-        if (doc["printerName"].is<const char*>())     cfg.printerName     = String((const char*)doc["printerName"]);
-        if (doc["printerIp"].is<const char*>())       cfg.printerIp       = String((const char*)doc["printerIp"]);
-        if (doc["moonrakerPort"].is<int>())           cfg.moonrakerPort   = doc["moonrakerPort"];
-        if (doc["moonrakerApiKey"].is<const char*>()) cfg.moonrakerApiKey = String((const char*)doc["moonrakerApiKey"]);
-        if (doc["bambuSerial"].is<const char*>())     cfg.bambuSerial     = String((const char*)doc["bambuSerial"]);
-        if (doc["bambuAccessCode"].is<const char*>()) cfg.bambuAccessCode = String((const char*)doc["bambuAccessCode"]);
+        // Printer list. Sent whole: the browser owns add/remove/reorder, the
+        // device just stores what arrives (empty access codes keep the stored
+        // one, so the UI never has to round-trip a secret).
+        if (doc["printers"].is<JsonArray>()) {
+            JsonArray arr = doc["printers"].as<JsonArray>();
+            PrinterCfg fresh[ORB_MAX_PRINTERS];
+            uint8_t n = 0;
+            for (JsonObject o : arr) {
+                if (n >= ORB_MAX_PRINTERS) break;
+                PrinterCfg& p = fresh[n];
+                p = PrinterCfg();                      // discard a skipped row's leftovers
+                p.type = Config::printerTypeFromStr(o["type"].as<String>());
+                p.name = o["name"].as<String>();
+                p.ip   = o["ip"].as<String>();
+                p.ip.trim();
+                if (!p.ip.length()) continue;          // skip blank rows
+                if (o["moonrakerPort"].is<int>())
+                    p.moonrakerPort = constrain((int)o["moonrakerPort"], 1, 65535);
+                p.moonrakerApiKey = o["moonrakerApiKey"].as<String>();
+                p.bambuSerial     = o["bambuSerial"].as<String>();
+                // A blank access code means "keep the stored one". `codeFrom` is
+                // the slot the browser loaded this entry from, so the code
+                // follows its printer even when rows are reordered or removed.
+                String code = o["bambuAccessCode"].as<String>();
+                if (!code.length() && o["codeFrom"].is<int>()) {
+                    int from = o["codeFrom"];
+                    if (from >= 0 && from < cfg.printerCount)
+                        code = cfg.printers[from].bambuAccessCode;
+                }
+                p.bambuAccessCode = code;
+                n++;
+            }
+            for (uint8_t i = 0; i < ORB_MAX_PRINTERS; i++) cfg.printers[i] = fresh[i];
+            cfg.printerCount = n;
+            if (cfg.activePrinter >= n) cfg.activePrinter = 0;
+        }
+        if (doc["activePrinter"].is<int>()) {
+            int a = doc["activePrinter"];
+            if (a >= 0 && a < cfg.printerCount) cfg.activePrinter = (uint8_t)a;
+        }
         // Only overwrite the admin password when a non-empty value is supplied.
         if (doc["adminPassword"].is<const char*>()) {
             String p = String((const char*)doc["adminPassword"]);
@@ -351,6 +396,20 @@ void begin(ConfigSavedCb onSaved) {
         req->onDisconnect([]() { delay(300); ESP.restart(); });
     });
 
+    // Switch the displayed printer. Unlike /api/config this does not reboot —
+    // the device just tears down the client and connects to the other printer.
+    server.on("/api/printer/select", HTTP_POST, [](AsyncWebServerRequest* req) {
+        int idx = -1;
+        if (req->hasParam("index", true))     idx = req->getParam("index", true)->value().toInt();
+        else if (req->hasParam("index"))      idx = req->getParam("index")->value().toInt();
+        if (idx < 0 || idx >= cfg.printerCount) {
+            req->send(400, "application/json", "{\"ok\":false,\"error\":\"bad index\"}");
+            return;
+        }
+        if (g_onSwitch) g_onSwitch((uint8_t)idx);
+        req->send(200, "application/json", "{\"ok\":true}");
+    });
+
     // Start/stop AMS HT drying. ?action=start (default) | stop. Temperature and
     // duration are derived on-device from the loaded filament. Open like the
     // other printer controls (trusted-LAN assumption).
@@ -445,5 +504,7 @@ void updateStatus(const PrinterStatus& s, const String& label) {
 int otaProgress() { return g_otaPct; }
 
 void setDryHandler(DryHandler cb) { g_onDry = cb; }
+
+void setPrinterSwitchHandler(PrinterSwitchHandler cb) { g_onSwitch = cb; }
 
 }  // namespace WebPortal
