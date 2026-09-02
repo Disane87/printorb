@@ -1,3 +1,19 @@
+# [2.0.0](https://github.com/Disane87/printorb/compare/v1.2.0...v2.0.0) (2026-09-02)
+
+
+* feat!: multi-printer support and a reworked touch UI ([342cdd0](https://github.com/Disane87/printorb/commit/342cdd0b0beb2adaeaee735c853a85830a45dc73))
+
+
+### BREAKING CHANGES
+
+* /api/config replaces the flat printerType/printerName/
+printerIp/moonrakerPort/moonrakerApiKey/bambuSerial/bambuAccessCode fields with
+a `printers` array plus `activePrinter`. Stored device settings are migrated
+automatically; only external callers of the HTTP API need updating.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01L5e5KwTUb4dHxqgz19Npdh
+
 # [1.2.0](https://github.com/Disane87/printorb/compare/v1.1.0...v1.2.0) (2026-06-11)
 
 
