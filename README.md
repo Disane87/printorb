@@ -331,3 +331,9 @@ keeping an eye on it, give the repo a ⭐ on GitHub — it really helps! 🙌
 
 Found a bug? Got an idea? [Open an issue](https://github.com/Disane87/printorb/issues)
 and let's make it better together! 🚀
+
+---
+
+<p align="center">
+  Made by me at <a href="https://subthiel.eu/softwareentwicklung">Subthiel</a> — software development &amp; 3D printing
+</p>
